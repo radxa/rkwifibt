@@ -1,4 +1,4 @@
-#AP6356S_NVRAM_V1.3_20180508
+#AP6356S_NVRAM_V1.4.1_20210114
 #Modified from AP6356SDP_V1.0_NVRAM_20150216
 NVRAMRev=$Rev: 373428 $
 sromrev=11
@@ -6,7 +6,7 @@ boardrev=0x1121
 boardtype=0x073e
 boardflags=0x02400201
 boardflags2=0x00802000
-boardflags3=0x0000000a
+boardflags3=0x0000010a
 macaddr=00:90:4c:1a:10:01
 ccode=0x5855
 regrev=1
@@ -119,3 +119,9 @@ rssicorrnorm_c1=4,4
 rssicorrnorm5g_c0=1,2,3,1,2,3,6,6,8,6,6,8
 rssicorrnorm5g_c1=1,2,3,2,2,2,7,7,8,7,7,8
 muxenab=0x10
+
+swctrlmap_2g=0x00001141,0x00004212,0x00001040,0x211212,0x0ff
+swctrlmap_5g=0x00000202,0x00000101,0x00000202,0x000000,0x047
+swctrlmapext_5g=0x00000000,0x00000000,0x00000000,0x000000,0x003
+swctrlmapext_2g=0x00000000,0x00000000,0x00000000,0x000000,0x003
+btc_params33=5
