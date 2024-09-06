@@ -34,9 +34,7 @@ int rk960_debug_flag =
 	DEBUG_FW_REC;
 
 static int debug_level =
-	DEBUG_LEVEL_ERROR	|
-	DEBUG_LEVEL_INFO	|
-	DEBUG_LEVEL_DEBUG;    
+	DEBUG_LEVEL_ERROR;
 module_param(debug_level, int, 0644);
 MODULE_PARM_DESC(debug_level, "debug level");
 
