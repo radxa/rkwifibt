@@ -37,20 +37,21 @@ wifibt_info()
 		-type f -name vendor -o -name idVendor 2>/dev/null | \
 		xargs grep -El "$VIDS" || true)"
 	for VENDOR in $VENDORS; do
-		UEVENT="$(echo $VENDOR | sed 's~\(/id\)\?/vendor~/uevent~')"
+		BUS=$(echo "$VENDOR" | cut -d'/' -f4)
+		case $BUS in
+			usb) PRODUCT="$(dirname "$VENDOR")/idProduct" ;;
+			*) PRODUCT="$(dirname "$VENDOR")/device" ;;
+		esac
+
 		VID="$(sed 's/^0x//' "$VENDOR")"
-		IDS="$(grep -v "^#" "$CHIPS_FILE" | grep "\b$VID:" | \
-			cut -f3 | tr ':' '.')"
-		for ID in $IDS; do
-			grep -iqE "$ID" "$UEVENT" || continue
-
-			grep -iw -m 1 "$ID" "$CHIPS_FILE" > "$CHIP_FILE"
-			BUS=$(echo "$VENDOR" | cut -d'/' -f4)
-			sed -i "s/\($ID\)/$BUS\t\1/" "$CHIP_FILE"
-
-			cat "$CHIP_FILE"
+		PID="$(sed 's/^0x//' "$PRODUCT")"
+		ID="$VID:$PID"
+		CHIP="$(grep -v "^#" "$CHIPS_FILE" | grep -w -m 1 "$ID")"
+		if [ "$CHIP" ]; then
+			echo "$CHIP" | sed "s/\($ID\)/$BUS\t\1/" | \
+				tee "$CHIP_FILE"
 			return
-		done
+		fi
 	done
 }
 
@@ -115,7 +116,7 @@ Realtek	RTL8822CE	10ec:c822	RTL8822CE.ko
 Realtek	RTL8822CS	024c:c822	RTL8822CS.ko
 Realtek	RTL8822CS	0bda:c822	RTL8822CS.ko
 Realtek	RTL8852BE	10ec:b852	8852be.ko
-Realtek RTL8852BS	024c:b852	8852bs.ko
+Realtek	RTL8852BS	024c:b852	8852bs.ko
 Broadcom	AP6212A	02d0:a9a6	bcmdhd.ko
 Broadcom	AP625X	02d0:a9bf	bcmdhd.ko	cyw43455.ko	# AP6255/AP6256/AP6745
 Broadcom	AP6275P	14e4:449d	bcmdhd_pcie.ko
