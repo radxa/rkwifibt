@@ -117,6 +117,7 @@ Realtek	RTL8822CS	024c:c822	RTL8822CS.ko
 Realtek	RTL8822CS	0bda:c822	RTL8822CS.ko
 Realtek	RTL8852BE	10ec:b852	8852be.ko
 Realtek	RTL8852BS	024c:b852	8852bs.ko
+Realtek	RTL8852BU	0bda:a85b	8852bu.ko
 Broadcom	AP6212A	02d0:a9a6	bcmdhd.ko
 Broadcom	AP625X	02d0:a9bf	bcmdhd.ko	cyw43455.ko	# AP6255/AP6256/AP6745
 Broadcom	AP6275P	14e4:449d	bcmdhd_pcie.ko
