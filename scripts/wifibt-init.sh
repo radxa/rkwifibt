@@ -22,9 +22,14 @@ try_insmod()
 	fi
 }
 
+wifi_interfaces()
+{
+	sed '1,2d;s/:.*//' /proc/net/wireless
+}
+
 wifi_ready()
 {
-	grep -wqE "(wlan|p2p)[0-9]" /proc/net/dev
+	[ -n "$(wifi_interfaces)" ]
 }
 
 bt_ready()
@@ -108,8 +113,10 @@ start_wifi()
 {
 	if wifi_ready; then
 		echo "Wi-Fi is already inited..."
-		ifup wlan0 2>/dev/null || true &
-		ifconfig wlan0 up || true
+		for iface in $(wifi_interfaces); do
+			ifup $iface 2>/dev/null || true &
+			ifconfig $iface up || true
+		done
 		return 0
 	fi
 
@@ -125,11 +132,11 @@ start_wifi()
 
 	for i in `seq 60`; do
 		if wifi_ready; then
-			if grep -wqE "wlan0" /proc/net/dev; then
-				echo "Successfully init Wi-Fi for $WIFIBT_CHIP!"
-				ifup wlan0 2>/dev/null || true &
-				ifconfig wlan0 up || true
-			fi
+			for iface in $(wifi_interfaces); do
+				ifup $iface 2>/dev/null || true &
+				ifconfig $iface up || true
+			done
+			echo "Successfully init Wi-Fi for $WIFIBT_CHIP!"
 			return 0
 		fi
 		sleep .1
@@ -224,9 +231,9 @@ start_wifibt()
 
 stop_wifi()
 {
-	for iface in $(ifconfig | grep -oE "^(wlan|p2p)[0-9]"); do
-		ifdown $iface 2>/dev/null || true
-		ifconfig $iface down 2>/dev/null || true
+	for iface in $(wifi_interfaces); do
+		ifdown $iface 2>/dev/null || true &
+		ifconfig $iface down || true
 	done
 }
 
@@ -247,7 +254,7 @@ stop_wifibt()
 suspend_wifibt()
 {
 	# Store enabled Wi-Fi interfaces
-	ifconfig | grep -oE "^(wlan|p2p)[0-9]" > "$IF_FILE" || true
+	wifi_interfaces > "$IF_FILE" || true
 
 	# Disable enabled Wi-Fi interfaces
 	for iface in $(cat "$IF_FILE"); do
