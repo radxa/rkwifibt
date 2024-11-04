@@ -73,11 +73,11 @@ ifneq ($(KERNELRELEASE),)
 else
 
 all:
-        @make -C $(KROOT) M=$(PWD) modules
+	@make -C $(KROOT) M=$(PWD) modules
 
 clean:
-        @make -C $(KROOT) M=$(PWD) clean
-        rm -f *.o
+	#@make -C $(KROOT) M=$(PWD) clean
+	rm -f *.o *.mod.c *.mod *.cmd *.ko
 
 endif
 
