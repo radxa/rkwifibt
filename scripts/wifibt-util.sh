@@ -46,7 +46,7 @@ wifibt_info()
 		VID="$(sed 's/^0x//' "$VENDOR")"
 		PID="$(sed 's/^0x//' "$PRODUCT")"
 		ID="$VID:$PID"
-		CHIP="$(grep -v "^#" "$CHIPS_FILE" | grep -w -m 1 "$ID")"
+		CHIP="$(grep -v "^#" "$CHIPS_FILE" | grep -w -m 1 "$ID" || true)"
 		if [ "$CHIP" ]; then
 			echo "$CHIP" | sed "s/\($ID\)/$BUS\t\1/" | \
 				tee "$CHIP_FILE"
