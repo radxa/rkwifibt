@@ -24,7 +24,18 @@ try_insmod()
 
 wifi_interfaces()
 {
-	sed '1,2d;s/:.*//' /proc/net/wireless
+	for DEV in $(sed '1,2d;s/:.*//' /proc/net/dev); do
+		case $DEV in
+			lo | eth*) ;;
+			p2p* | wlan*) echo $DEV ;;
+			*)
+				if grep -wq "DEVTYPE=wlan" \
+					/sys/class/net/$DEV/uevent; then
+					echo $DEV
+				fi
+				;;
+		esac
+	done
 }
 
 wifi_ready()
