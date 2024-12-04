@@ -28,7 +28,33 @@
 #define WOW_GET_AOAC_RPT_C2H_CNT 1000
 #define WOW_GET_AOAC_RPT_C2H_DLY 100
 
+#define WOW_CPUIO_RX_CTRL_CNT 20
+#define WOW_CPUIO_RX_CTRL_DLY 1000
+
 #define WOW_STOPTRX_H2CREG_DW_SIZE 1 /* mapping to struct wow_stoptrx_h2creg */
+
+#define PROXY_MDNS_DUMP	0
+#define PROXY_SNMP_DUMP	1
+
+#define WOW_MAX_MACID 255
+
+#define WOW_POLL_DLY_US 50
+#define WOW_POLL_CNT 1000
+
+#define R_AX_DBG_WOW_REASON 0x815F
+#define R_AX_DBG_WOW_READY 0x815E
+#define MASK_DBG_WOW_READY 0xFF
+
+enum DBG_FW_WOW_CPU_IO_RX_STATE {
+	WOW_CPU_RX_DIS = 0,
+	WOW_CPU_RX_EN = 1
+};
+
+enum DBG_FW_WOWLAN_READY {
+	WOWLAN_NOT_READY = 0x00,
+	WOWLAN_SLEEP_READY = 0x01,
+	WOWLAN_RESUME_READY = 0x02
+};
 
 /**
  * @struct keep_alive
@@ -160,7 +186,8 @@ struct gtk_ofld {
 	u32 tkip_en:1;
 	u32 ieee80211w_en:1;
 	u32 pairwise_wakeup:1;
-	u32 rsvd0:4;
+	u32 norekey_wakeup:1;
+	u32 rsvd0:3;
 	u32 aoac_rep_id:8;
 	u32 mac_id:8;
 	u32 gtk_rsp_id:8;
@@ -361,31 +388,31 @@ struct negative_pattern {
 };
 
 /**
- * @struct uphy_ctrl
- * @brief uphy_ctrl
+ * @struct hst2dev_ctrl
+ * @brief hst2dev_ctrl
  *
- * @var uphy_ctrl::disable_uphy
+ * @var hst2dev_ctrl::disable_uphy
  * Please Place Description here.
- * @var uphy_ctrl::handshake_mode
+ * @var hst2dev_ctrl::handshake_mode
  * Please Place Description here.
- * @var uphy_ctrl::rsvd0
+ * @var hst2dev_ctrl::rsvd0
  * Please Place Description here.
- * @var uphy_ctrl::rise_hst2dev_dis_uphy
+ * @var hst2dev_ctrl::rise_hst2dev_dis_uphy
  * Please Place Description here.
- * @var uphy_ctrl::uphy_dis_delay_unit
+ * @var hst2dev_ctrl::uphy_dis_delay_unit
  * Please Place Description here.
- * @var uphy_ctrl::pdn_as_uphy_dis
+ * @var hst2dev_ctrl::pdn_as_uphy_dis
  * Please Place Description here.
- * @var uphy_ctrl::pdn_to_enable_uphy
+ * @var hst2dev_ctrl::pdn_to_enable_uphy
  * Please Place Description here.
- * @var uphy_ctrl::rsvd1
+ * @var hst2dev_ctrl::rsvd1
  * Please Place Description here.
- * @var uphy_ctrl::hst2dev_gpio_num
+ * @var hst2dev_ctrl::hst2dev_gpio_num
  * Please Place Description here.
- * @var uphy_ctrl::uphy_dis_delay_count
+ * @var hst2dev_ctrl::uphy_dis_delay_count
  * Please Place Description here.
  */
-struct uphy_ctrl {
+struct hst2dev_ctrl {
 	u32 disable_uphy:1;
 	u32 handshake_mode:3;
 	u32 rsvd0:4;
@@ -393,7 +420,8 @@ struct uphy_ctrl {
 	u32 uphy_dis_delay_unit:1;
 	u32 pdn_as_uphy_dis:1;
 	u32 pdn_to_enable_uphy:1;
-	u32 rsvd1:4;
+	u32 hst2dev_en:1;
+	u32 rsvd1:3;
 	u32 hst2dev_gpio_num:8;
 	u32 uphy_dis_delay_count:8;
 };
@@ -532,17 +560,6 @@ u32 mac_cfg_keep_alive(struct mac_ax_adapter *adapter,
  */
 
 /**
- * @brief get_wake_reason
- *
- * @param *adapter
- * @param *wowlan_wake_reason
- * @return Please Place Description here.
- * @retval u32
- */
-
-u32 get_wake_reason(struct mac_ax_adapter *adapter,
-		    u8 *wowlan_wake_reason);
-/**
  * @}
  */
 
@@ -675,10 +692,7 @@ u32 mac_cfg_nlo(struct mac_ax_adapter *adapter,
  * @retval u32
  */
 u32 mac_cfg_dev2hst_gpio(struct mac_ax_adapter *adapter,
-			 struct mac_ax_dev2hst_gpio_info *parm);
-/**
- * @}
- */
+			 struct rtw_dev2hst_gpio_info *parm);
 
 /**
  * @addtogroup WakeOnWlan
@@ -686,15 +700,15 @@ u32 mac_cfg_dev2hst_gpio(struct mac_ax_adapter *adapter,
  */
 
 /**
- * @brief mac_cfg_uphy_ctrl
+ * @brief mac_hst2dev_uphy_ctrl
  *
  * @param *adapter
  * @param *info
  * @return Please Place Description here.
  * @retval u32
  */
-u32 mac_cfg_uphy_ctrl(struct mac_ax_adapter *adapter,
-		      struct mac_ax_uphy_ctrl_info *info);
+u32 mac_cfg_hst2dev_ctrl(struct mac_ax_adapter *adapter,
+			 struct mac_ax_hst2dev_ctrl_info *info);
 /**
  * @}
  */
@@ -720,6 +734,20 @@ u32 mac_cfg_wowcam_upd(struct mac_ax_adapter *adapter,
 
 u32 mac_get_wow_wake_rsn(struct mac_ax_adapter *adapter, u8 *wake_rsn,
 			 u8 *reset);
+
+/**
+ * @brief mac_cfg_fw_cpuio_rx
+ *
+ * @param *adapter
+ * @param sleep
+ * @return Please Place Description here.
+ * @retval u32
+ */
+u32 mac_cfg_fw_cpuio_rx(struct mac_ax_adapter *adapter, u8 sleep);
+
+/**
+ * @}
+ */
 
 /**
  * @addtogroup WakeOnWlan
@@ -821,15 +849,172 @@ u32 mac_wow_stop_trx(struct mac_ax_adapter *adapter);
 u32 mac_wow_get_stoptrx_st(struct mac_ax_adapter *adapter);
 
 /**
- * @brief free_aoac_report
+ * @brief mac_cfg_wow_auto_test
  *
  * @param *adapter
+ * @param rxtest
  * @return Please Place Description here.
  * @retval u32
  */
-u32 free_aoac_report(struct mac_ax_adapter *adapter);
+u32 mac_cfg_wow_auto_test(struct mac_ax_adapter *adapter, u8 rxtest);
 /**
  * @}
+ */
+
+/**
+ * @addtogroup WakeOnWlan
+ * @{
+ */
+
+/**
+ * @brief mac_proxyofld
+ *
+ * @param *adapter
+ * @param cfg
+ * @return Please Place Description here.
+ * @retval u32
+ */
+u32 mac_proxyofld(struct mac_ax_adapter *adapter, struct rtw_hal_mac_proxyofld *pcfg);
+/**
+ * @}
+ */
+
+/**
+ * @addtogroup WakeOnWlan
+ * @{
+ */
+
+/**
+ * @brief mac_proxy_mdns_serv_pktofld
+ *
+ * @param *adapter
+ * @param serv
+ * @param pktid
+ * @return Please Place Description here.
+ * @retval u32
+ */
+u32 mac_proxy_mdns_serv_pktofld(struct mac_ax_adapter *adapter,
+				struct rtw_hal_mac_proxy_mdns_service *pserv, u8 *pktid);
+/**
+ * @}
+ */
+
+/**
+ * @addtogroup WakeOnWlan
+ * @{
+ */
+
+/**
+ * @brief mac_proxy_mdns_txt_pktofld
+ *
+ * @param *adapter
+ * @param txt
+ * @param pktid
+ * @return Please Place Description here.
+ * @retval u32
+ */
+u32 mac_proxy_mdns_txt_pktofld(struct mac_ax_adapter *adapter,
+			       struct rtw_hal_mac_proxy_mdns_txt *ptxt, u8 *pktid);
+/**
+ * @}
+ */
+
+/**
+ * @addtogroup WakeOnWlan
+ * @{
+ */
+
+/**
+ * @brief mac_proxy_mdns
+ *
+ * @param *adapter
+ * @param mdns
+ * @return Please Place Description here.
+ * @retval u32
+ */
+u32 mac_proxy_mdns(struct mac_ax_adapter *adapter, struct rtw_hal_mac_proxy_mdns *pmdns);
+/**
+ * @}
+ */
+
+/**
+ * @addtogroup WakeOnWlan
+ * @{
+ */
+
+/**
+ * @brief mac_proxy_ptcl_pattern
+ *
+ * @param *adapter
+ * @param cfg
+ * @return Please Place Description here.
+ * @retval u32
+ */
+u32 mac_proxy_ptcl_pattern(struct mac_ax_adapter *adapter,
+			   struct rtw_hal_mac_proxy_ptcl_pattern *cfg);
+/**
+ * @}
+ */
+
+/**
+ * @addtogroup WakeOnWlan
+ * @{
+ */
+
+/**
+ * @brief mac_proxy_snmp
+ *
+ * @param *adapter
+ * @param *cfg
+ * @return Please Place Description here.
+ * @retval u32
+ */
+u32 mac_proxy_snmp(struct mac_ax_adapter *adapter, struct rtw_hal_mac_proxy_snmp *cfg);
+/**
+ * @}
+ */
+
+/**
+ * @addtogroup WakeOnWlan
+ * @{
+ */
+
+/**
+ * @brief mac_check_proxy_done
+ *
+ * @param *adapter
+ * @param *fw_ret
+ * @return Please Place Description here.
+ * @retval u32
+ */
+u32 mac_check_proxy_done(struct mac_ax_adapter *adapter, u8 *fw_ret);
+/**
+ * @}
+ */
+ /**
+  * @brief mac_magic_waker_filter
+  *
+  * @param *adapter
+  * @param parm
+  * @return Please Place Description here.
+  * @retval u32
+  */
+u32 mac_magic_waker_filter(struct mac_ax_adapter* adapter,
+			   struct rtw_magic_waker_parm* parm);
+/**
+ * @}
+ */
+ /**
+  * @brief mac_tcp_keepalive
+  *
+  * @param *adapter
+  * @param parm
+  * @return Please Place Description here.
+  * @retval u32
+  */
+u32 mac_tcp_keepalive(struct mac_ax_adapter* adapter,
+		      struct rtw_tcp_keepalive_parm* parm);
+/**
  * @}
  */
 

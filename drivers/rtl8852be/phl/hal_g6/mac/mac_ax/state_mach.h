@@ -93,6 +93,8 @@
  * Please Place Description here.
  * @var mac_ax_state_mach::p2p_stat
  * Please Place Description here.
+ * @var mac_ax_state_mach::nan_stat
+ * Please Place Description here.
  */
 struct mac_ax_state_mach {
 #define MAC_AX_PWR_OFF 0
@@ -135,6 +137,8 @@ struct mac_ax_state_mach {
 	u8 pkt_ofld;
 	u8 efuse_ofld;
 	u8 macid_pause;
+	u8 disable_rf;
+	u8 sch_tx_en_ofld;
 #define MAC_AX_MCC_EMPTY 0
 #define MAC_AX_MCC_STATE_H2C_SENT 1
 #define MAC_AX_MCC_STATE_H2C_RCVD 2
@@ -143,12 +147,14 @@ struct mac_ax_state_mach {
 #define MAC_AX_MCC_STOP_DONE 5
 #define MAC_AX_MCC_STATE_ERROR 6
 	u8 mcc_group[4];
+	u8 mcc_group_state[4];
 #define MAC_AX_MCC_REQ_IDLE 0
 #define MAC_AX_MCC_REQ_H2C_SENT 1
 #define MAC_AX_MCC_REQ_H2C_RCVD 2
 #define MAC_AX_MCC_REQ_DONE 3
 #define MAC_AX_MCC_REQ_FAIL 4
 	u8 mcc_request[4];
+	u8 mcc_request_state[4];
 #define MAC_AX_FW_RESET_IDLE 0
 #define MAC_AX_FW_RESET_RECV 1
 #define MAC_AX_FW_RESET_RECV_DONE 2
@@ -205,6 +211,26 @@ struct mac_ax_state_mach {
 	u8 ser_ctrl_st;
 #define MAC_AX_CH_SWITCH_GET_RPT 4
 	u8 ch_switch;
+#define MAC_AX_PROXY_IDLE 0
+#define MAC_AX_PROXY_SENDING 1
+#define MAC_AX_PROXY_BUSY 2
+	u8 proxy_st;
+	u8 proxy_ret;
+	u8 sensing_csi_st;
+#define MAC_AX_SENSING_CSI_IDLE 0
+#define MAC_AX_SENSING_CSI_SENDING 1
+#define MAC_AX_NAN_IDLE 0
+#define MAX_AX_NAN_ACT_H2C_FAIL 1
+#define MAX_AX_NAN_ACT_H2C_DONE 2
+	u8 nan_stat;
+#define MAC_AX_STA_CSA_IDLE 0
+#define MAC_AX_STA_CSA_SENDING 1
+#define MAC_AX_STA_CSA_BUSY 2
+	u8 sta_csa_st;
+	u8 sta_csa_ret;
+#define MAC_AX_H2C_C2H_MON_OFF 0
+#define MAC_AX_H2C_C2H_MON_ON 1
+	u8 h2c_c2h_mon;
 };
 
 #define MAC_AX_DFLT_SM \
@@ -212,10 +238,13 @@ struct mac_ax_state_mach {
 	MAC_AX_OFLD_REQ_IDLE, MAC_AX_OFLD_REQ_IDLE, MAC_AX_OFLD_REQ_IDLE, \
 	MAC_AX_CMD_OFLD_IDLE, MAC_AX_OFLD_H2C_IDLE, MAC_AX_OFLD_H2C_IDLE, \
 	MAC_AX_OFLD_H2C_IDLE, MAC_AX_OFLD_H2C_IDLE, MAC_AX_OFLD_H2C_IDLE, \
-	MAC_AX_OFLD_H2C_IDLE, {MAC_AX_MCC_EMPTY}, {MAC_AX_MCC_REQ_IDLE}, \
-	MAC_AX_FW_RESET_IDLE, MAC_AX_AOAC_RPT_IDLE, MAC_AX_P2P_ACT_IDLE, \
-	MAC_AX_FUNC_OFF, MAC_AX_FUNC_OFF, MAC_AX_FUNC_OFF, MAC_AX_FUNC_OFF, \
-	MAC_AX_FUNC_OFF, MAC_AX_WOW_STOPTRX_IDLE, MAC_AX_MAC_NOT_RDY, \
-	MAC_AX_ROLE_ALOC_SUCC, MAC_AX_PLAT_OFF, MAC_AX_IO_ST_NORM, \
-	MAC_AX_L2_EN, MAC_AX_SER_CTRL_SRT}
+	MAC_AX_OFLD_H2C_IDLE, MAC_AX_OFLD_H2C_IDLE, MAC_AX_OFLD_H2C_IDLE, \
+	{MAC_AX_MCC_EMPTY}, {MAC_AX_MCC_EMPTY}, {MAC_AX_MCC_REQ_IDLE}, \
+	{MAC_AX_MCC_REQ_IDLE}, MAC_AX_FW_RESET_IDLE, MAC_AX_AOAC_RPT_IDLE, \
+	MAC_AX_P2P_ACT_IDLE, MAC_AX_FUNC_OFF, MAC_AX_FUNC_OFF, \
+	MAC_AX_FUNC_OFF, MAC_AX_FUNC_OFF, MAC_AX_FUNC_OFF, \
+	MAC_AX_WOW_STOPTRX_IDLE, MAC_AX_MAC_NOT_RDY, MAC_AX_ROLE_ALOC_SUCC, \
+	MAC_AX_PLAT_OFF, MAC_AX_IO_ST_NORM, MAC_AX_L2_EN, MAC_AX_SER_CTRL_SRT,\
+	MAC_AX_OFLD_H2C_IDLE, MAC_AX_PROXY_IDLE, MAC_AX_PROXY_IDLE, MAC_AX_SENSING_CSI_IDLE,\
+	MAC_AX_NAN_IDLE, MAC_AX_STA_CSA_IDLE, MAC_AX_STA_CSA_IDLE, MAC_AX_H2C_C2H_MON_OFF}
 #endif

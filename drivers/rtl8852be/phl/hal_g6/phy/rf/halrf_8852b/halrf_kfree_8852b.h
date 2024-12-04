@@ -19,8 +19,8 @@
 /*@--------------------------Define Parameters-------------------------------*/
 
 #define HIDE_EFUSE_START_ADDR_8852B	 0x5A0
-#define HIDE_EFUSE_END_ADDR_8852B	 0x5F0
-#define HIDE_EFUSE_SIZE_8852B		 HIDE_EFUSE_END_ADDR_8852B - HIDE_EFUSE_START_ADDR_8852B
+#define HIDE_EFUSE_END_ADDR_8852B	 0x5DF
+#define HIDE_EFUSE_SIZE_8852B		 HIDE_EFUSE_END_ADDR_8852B - HIDE_EFUSE_START_ADDR_8852B + 1
 
 #define THERMAL_TRIM_HIDE_EFUSE_A_8852B 0x5DF
 #define THERMAL_TRIM_HIDE_EFUSE_B_8852B 0x5DC
@@ -50,6 +50,9 @@
 
 void halrf_get_efuse_trim_8852b(struct rf_info *rf,
 					enum phl_phy_idx phy);
+
+void halrf_kfree_get_info_8852b(struct rf_info *rf, char input[][16], u32 *_used,
+			 char *output, u32 *_out_len);
 
 #endif
 #endif	/*_HALRF_SET_PWR_TABLE_8852B_H_*/

@@ -45,11 +45,23 @@
 /* Debug Log Decode */
 #define MAC_AX_FEATURE_DBGDEC		1
 
+/* For USB IO Offload Accelerate enable*/
+#if defined(CONFIG_FW_DBCC_OFLD_SUPPORT) || defined(CONFIG_PHL_IO_OFLD)
+#define MAC_USB_IO_ACC_ON	1
+#else
+#define MAC_USB_IO_ACC_ON	0
+#endif
+
+/* For workaround temp usage */
+#define MAC_AX_RTK_WARD		0
 #ifdef CONFIG_BTCOEX
 #define MAC_AX_COEX_INIT_EN	0
 #else
 #define MAC_AX_COEX_INIT_EN	1
 #endif
+
+/* For USB IO Offload Accelerate*/
+#define MAC_USB_IO_ACC 		0
 
 #else /* for WD1 test program */
 
@@ -77,10 +89,20 @@
 #define MAC_AX_COEX_INIT_EN	1
 
 /* Debug command */
-#define MAC_AX_FEATURE_DBGCMD		1
+#define MAC_AX_FEATURE_DBGCMD	1
 
 /* Debug Log Decode */
-#define MAC_AX_FEATURE_DBGDEC		1
+#define MAC_AX_FEATURE_DBGDEC	1
+
+/* For workaround temp usage */
+#define MAC_AX_RTK_WARD		0
+
+/* For USB IO Offload Accelerate*/
+#define MAC_USB_IO_ACC 		0
+
+/* For USB IO Offload Accelerate enable*/
+#define MAC_USB_IO_ACC_ON	1
+
 #endif // #else /* for WD1 test program */
 
 #endif

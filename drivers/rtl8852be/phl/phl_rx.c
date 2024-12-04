@@ -15,6 +15,9 @@
 #define _PHL_RX_C_
 #include "phl_headers.h"
 
+void _phl_rx_proc_snif_info_ex(struct phl_info_t *phl_info,
+			      struct rtw_phl_rx_pkt *ppdu_sts,
+			      struct rtw_phl_rx_pkt *normal_rx);
 
 struct rtw_phl_rx_pkt *rtw_phl_query_phl_rx(void *phl)
 {
@@ -180,11 +183,12 @@ void phl_release_phl_rx(struct phl_info_t *phl_info,
 
 	rx_pkt_pool = (struct phl_rx_pkt_pool *)phl_info->rx_pkt_pool;
 
-	_os_spinlock(drv_priv, &rx_pkt_pool->idle_lock, _bh, NULL);
 	_os_mem_set(phl_to_drvpriv(phl_info), &phl_rx->r, 0, sizeof(phl_rx->r));
 	phl_rx->type = RTW_RX_TYPE_MAX;
 	phl_rx->rxbuf_ptr = NULL;
 	INIT_LIST_HEAD(&phl_rx->list);
+
+	_os_spinlock(drv_priv, &rx_pkt_pool->idle_lock, _bh, NULL);
 	list_add_tail(&phl_rx->list, &rx_pkt_pool->idle);
 	rx_pkt_pool->idle_cnt++;
 	_os_spinunlock(drv_priv, &rx_pkt_pool->idle_lock, _bh, NULL);
@@ -360,7 +364,7 @@ enum rtw_phl_status _phl_add_rx_pkt(struct phl_info_t *phl_info,
 	wptr = (u16)_os_atomic_read(drv, &ring->phl_idx);
 	rptr = (u16)_os_atomic_read(drv, &ring->core_idx);
 
-	ring_res = phl_calc_avail_wptr(rptr, wptr, MAX_PHL_RING_ENTRY_NUM);
+	ring_res = phl_calc_avail_wptr(rptr, wptr, MAX_PHL_RX_RING_ENTRY_NUM);
 	PHL_TRACE(COMP_PHL_RECV, _PHL_DEBUG_,
 		"[3] _phl_add_rx_pkt::[Query] phl_idx =%d , core_idx =%d , ring_res =%d\n",
 		_os_atomic_read(drv, &ring->phl_idx),
@@ -373,9 +377,10 @@ enum rtw_phl_status _phl_add_rx_pkt(struct phl_info_t *phl_info,
 	}
 
 	wptr = wptr + 1;
-	if (wptr >= MAX_PHL_RING_ENTRY_NUM)
+	if (wptr >= MAX_PHL_RX_RING_ENTRY_NUM)
 		wptr = 0;
 
+	_phl_record_rx_stats(recvpkt);
 	ring->entry[wptr] = recvpkt;
 
 	if (wptr)
@@ -383,16 +388,18 @@ enum rtw_phl_status _phl_add_rx_pkt(struct phl_info_t *phl_info,
 	else
 		_os_atomic_set(drv, &ring->phl_idx, 0);
 
+#ifdef DEBUG_PHL_RX
+	phl_info->rx_stats.rx_pkt_core++;
+	if (recvpkt->mdata.pktlen == phl_info->cnt_rx_pktsz)
+		phl_info->rx_stats.rx_pktsz_core++;
+#endif
 #ifdef PHL_RX_BATCH_IND
 	phl_info->rx_new_pending = 1;
-	pstatus = RTW_PHL_STATUS_SUCCESS;
 #endif
+	pstatus = RTW_PHL_STATUS_SUCCESS;
 
 out:
 	_os_spinunlock(drv, &phl_info->rx_ring_lock, _bh, NULL);
-
-	if(pstatus == RTW_PHL_STATUS_SUCCESS)
-		_phl_record_rx_stats(recvpkt);
 
 	FUNCOUT_WSTS(pstatus);
 
@@ -424,6 +431,7 @@ phl_sta_ps_enter(struct phl_info_t *phl_info, struct rtw_phl_stainfo_t *sta,
 
 	if (ops->ap_ps_sta_ps_change)
 		ops->ap_ps_sta_ps_change(d, role->id, sta->mac_addr, true);
+	phl_send_client_ps_annc_ntfy_cmd(phl_info, sta, PHL_ClIENT_PS);
 }
 
 void
@@ -451,6 +459,7 @@ phl_sta_ps_exit(struct phl_info_t *phl_info, struct rtw_phl_stainfo_t *sta,
 
 	if (ops->ap_ps_sta_ps_change)
 		ops->ap_ps_sta_ps_change(d, role->id, sta->mac_addr, false);
+	phl_send_client_ps_annc_ntfy_cmd(phl_info, sta, PHL_ClIENT_ACTIVE);
 }
 
 void
@@ -461,28 +470,38 @@ phl_rx_handle_sta_process(struct phl_info_t *phl_info,
 	struct rtw_wifi_role_t *role = NULL;
 	struct rtw_phl_stainfo_t *sta = NULL;
 	void *d = phl_to_drvpriv(phl_info);
+	struct rtw_wifi_role_link_t *rlink = NULL;
 
 	if (!phl_info->phl_com->dev_sw_cap.ap_ps)
 		return;
 
 	if (m->addr_cam_vld) {
 		sta = rtw_phl_get_stainfo_by_macid(phl_info, m->macid);
-		if (sta && sta->wrole)
+		if (sta && sta->wrole) {
 			role = sta->wrole;
+			rlink = sta->rlink;
+		}
 	}
 
-	if (!sta) {
+	if (!sta) { /* can be removed? */
 		role = phl_get_wrole_by_addr(phl_info, m->mac_addr);
-		if (role)
+		if (role) {
+			rlink = phl_get_rlink_by_hw_band(role, m->bb_sel);
+
 			sta = rtw_phl_get_stainfo_by_addr(phl_info,
-			                                  role, m->ta);
+			                                  role, rlink, m->ta);
+		}
 	}
 
 	if (!role || !sta)
 		return;
 
+	if (!rlink)
+		return;
+
 	rx->r.tx_sta = sta;
 	rx->r.rx_role = role;
+	rx->r.rx_rlink = rlink;
 
 	PHL_TRACE(COMP_PHL_PS, _PHL_DEBUG_,
 	          "ap-ps: more_frag=%u, frame_type=%u, role_type=%d, pwr_bit=%u, seq=%u\n",
@@ -494,13 +513,13 @@ phl_rx_handle_sta_process(struct phl_info_t *phl_info,
 	if (!m->more_frag &&
 	    (m->frame_type == RTW_FRAME_TYPE_DATA ||
 	     m->frame_type == RTW_FRAME_TYPE_MGNT) &&
-	    (role->type == PHL_RTYPE_AP ||
-	     role->type == PHL_RTYPE_P2P_GO)) {
+	    !m->rx_deferred_release &&
+	     rtw_phl_role_is_ap_category(role)) {
 		/* May get a @rx with macid set to our self macid, check if that
 		 * happens here to avoid pausing self macid. This is put here so
 		 * we wouldn't do it on our normal rx path, which degrades rx
 		 * throughput significantly. */
-		if (phl_self_stainfo_chk(phl_info, role, sta))
+		if (phl_self_stainfo_chk(phl_info, role, rlink, sta))
 			return;
 
 		if (_os_atomic_read(d, &sta->ps_sta)) {
@@ -556,7 +575,7 @@ static inline u16 seq_sub(u16 sq1, u16 sq2)
 
 static inline u16 reorder_index(struct phl_tid_ampdu_rx *r, u16 seq)
 {
-	return seq_sub(seq, r->ssn) % r->buf_size;
+	return seq % r->buf_size;
 }
 
 static void phl_release_reorder_frame(struct phl_info_t *phl_info,
@@ -564,20 +583,30 @@ static void phl_release_reorder_frame(struct phl_info_t *phl_info,
                                       int index, _os_list *frames)
 {
 	struct rtw_phl_rx_pkt *pkt = r->reorder_buf[index];
+	struct rtw_r_meta_data *meta;
 
 	if (!pkt)
 		goto out;
 
+	meta = &pkt->r.mdata;
+
 	/* release the frame from the reorder ring buffer */
 	r->stored_mpdu_num--;
 	r->reorder_buf[index] = NULL;
+	meta->rx_deferred_release = 1;
 	list_add_tail(&pkt->list, frames);
+
+	PHL_TRACE(COMP_PHL_RECV, _PHL_DEBUG_, "release mpdu_seq_num 0x%03x (tid=%u)\n",
+	          r->head_seq_num, r->tid);
 
 out:
 	r->head_seq_num = seq_inc(r->head_seq_num);
+
+	PHL_TRACE(COMP_PHL_RECV, _PHL_DEBUG_, "update head_seq_num 0x%03x (tid=%u)\n",
+	          r->head_seq_num, r->tid);
 }
 
-#define HT_RX_REORDER_BUF_TIMEOUT_MS 100
+#define HT_RX_REORDER_BUF_TIMEOUT_MS 500
 
 /*
  * If the MPDU at head_seq_num is ready,
@@ -609,8 +638,7 @@ static void phl_reorder_release(struct phl_info_t *phl_info,
 {
 	/* ref ieee80211_sta_reorder_release() and wil_reorder_release() */
 
-	int index, i, j;
-	u32 cur_time = _os_get_cur_time_ms();
+	int index, j;
 
 	/* release the buffer until next missing frame */
 	index = reorder_index(r, r->head_seq_num);
@@ -619,6 +647,7 @@ static void phl_reorder_release(struct phl_info_t *phl_info,
 		 * No buffers ready to be released, but check whether any
 		 * frames in the reorder buffer have timed out.
 		 */
+		u32 cur_time = _os_get_cur_time_ms();
 		int skipped = 1;
 		for (j = (index + 1) % r->buf_size; j != index;
 			j = (j + 1) % r->buf_size) {
@@ -626,14 +655,9 @@ static void phl_reorder_release(struct phl_info_t *phl_info,
 				skipped++;
 				continue;
 			}
-			if (skipped && cur_time < r->reorder_time[j] +
-				HT_RX_REORDER_BUF_TIMEOUT_MS)
+			if (skipped && (s32)(r->reorder_time[j] +
+				HT_RX_REORDER_BUF_TIMEOUT_MS - cur_time) > 0)
 				goto set_release_timer;
-
-			/* don't leave incomplete A-MSDUs around */
-			for (i = (index + 1) % r->buf_size; i != j;
-				i = (i + 1) % r->buf_size)
-				phl_recycle_rx_buf(phl_info, r->reorder_buf[i]);
 
 			PHL_TRACE(COMP_PHL_RECV, _PHL_INFO_, "release an RX reorder frame due to timeout on earlier frames\n");
 
@@ -644,6 +668,9 @@ static void phl_reorder_release(struct phl_info_t *phl_info,
 			 */
 			r->head_seq_num =
 				(r->head_seq_num + skipped) & SEQ_MASK;
+
+			PHL_TRACE(COMP_PHL_RECV, _PHL_INFO_, "release an RX reorder frame, new head_seq 0x%03x (tid=%u)\n",
+			          r->head_seq_num, r->tid);
 			skipped = 0;
 		}
 	} else while (r->reorder_buf[index]) {
@@ -652,25 +679,12 @@ static void phl_reorder_release(struct phl_info_t *phl_info,
 	}
 
 	if (r->stored_mpdu_num) {
-		j = index = r->head_seq_num % r->buf_size;
-
-		for (; j != (index - 1) % r->buf_size;
-			j = (j + 1) % r->buf_size) {
-			if (r->reorder_buf[j])
-				break;
-		}
 
 set_release_timer:
 
 		if (!r->removed)
 			_os_set_timer(r->drv_priv, &r->sta->reorder_timer,
 			              HT_RX_REORDER_BUF_TIMEOUT_MS);
-	} else {
-		/* TODO: implementation of cancel timer on Linux is
-			del_timer_sync(), it can't be called with same spinlock
-			held with the expiration callback, that causes a potential
-			deadlock. */
-		_os_cancel_timer_async(r->drv_priv, &r->sta->reorder_timer);
 	}
 }
 
@@ -682,25 +696,24 @@ void phl_sta_rx_reorder_timer_expired(void *t)
 	struct rtw_phl_com_t *phl_com = sta->wrole->phl_com;
 	struct phl_info_t *phl_info = (struct phl_info_t *)phl_com->phl_priv;
 	void *drv_priv = phl_to_drvpriv(phl_info);
+	_os_list frames;
 	u8 i = 0;
 
 	PHL_INFO("Rx reorder timer expired, sta=0x%p\n", sta);
 
+	INIT_LIST_HEAD(&frames);
+
+	_os_spinlock(drv_priv, &sta->tid_rx_lock, _bh, NULL);
 	for (i = 0; i < ARRAY_SIZE(sta->tid_rx); i++) {
-		_os_list frames;
-
-		INIT_LIST_HEAD(&frames);
-
-		_os_spinlock(drv_priv, &sta->tid_rx_lock, _bh, NULL);
 		if (sta->tid_rx[i])
 			phl_reorder_release(phl_info, sta->tid_rx[i], &frames);
-		_os_spinunlock(drv_priv, &sta->tid_rx_lock, _bh, NULL);
-
-		phl_handle_rx_frame_list(phl_info, &frames);
-#ifdef PHL_RX_BATCH_IND
-		_phl_indic_new_rxpkt(phl_info);
-#endif
 	}
+	_os_spinunlock(drv_priv, &sta->tid_rx_lock, _bh, NULL);
+
+	phl_handle_rx_frame_list(phl_info, &frames);
+#ifdef PHL_RX_BATCH_IND
+	_phl_indic_new_rxpkt(phl_info);
+#endif
 
 	_os_event_set(drv_priv, &sta->comp_sync);
 }
@@ -753,6 +766,66 @@ void rtw_phl_flush_reorder_buf(void *phl, struct rtw_phl_stainfo_t *sta)
 
 }
 
+#ifdef PHL_RXSC_AMPDU
+static void _phl_rxsc_cache_entry(struct phl_info_t *phl_info,
+								struct phl_tid_ampdu_rx *r,
+								struct rtw_r_meta_data *meta)
+{
+	struct rtw_phl_com_t *phl_com = phl_info->phl_com;
+	struct rtw_rxsc_cache_entry *rxsc_entry = &phl_com->rxsc_entry;
+
+	_os_spinlock(phl_com->drv_priv, &rxsc_entry->rxsc_lock, _bh, NULL);
+	rxsc_entry->cached_rx_macid = meta->macid;
+	rxsc_entry->cached_rx_tid = meta->tid;
+	rxsc_entry->cached_rx_ppdu_cnt = meta->ppdu_cnt;
+	rxsc_entry->cached_rx_seq = meta->seq;
+	rxsc_entry->cached_r = r;
+	_os_spinunlock(phl_com->drv_priv, &rxsc_entry->rxsc_lock, _bh, NULL);
+
+#ifdef DEBUG_PHL_RX
+	phl_info->rx_stats.rxsc_ampdu[2]++;
+#endif
+}
+
+static bool _phl_rxsc_cache_check(struct phl_info_t *phl_info,
+									struct rtw_phl_rx_pkt *phl_rx,
+									struct rtw_r_meta_data *meta)
+{
+	struct rtw_phl_com_t *phl_com = phl_info->phl_com;
+	struct rtw_rxsc_cache_entry *rxsc_entry = &phl_com->rxsc_entry;
+	struct phl_tid_ampdu_rx *r;
+	u8 res = false;
+
+	if (PHL_MACID_MAX_NUM != rxsc_entry->cached_rx_macid) {
+		_os_spinlock(phl_com->drv_priv,
+				&rxsc_entry->rxsc_lock, _bh, NULL);
+		r = rxsc_entry->cached_r;
+		if (r) {
+			r->head_seq_num = seq_inc(r->head_seq_num);
+			phl_rx->r.rx_role = r->sta->wrole;
+			res = true;
+		} else {
+			PHL_ERR("[%s]RXSC: cached_r is NULL!\n", __func__);
+			/* reset cached macid & sta due to illegal cached_r */
+			rxsc_entry->cached_rx_macid = PHL_MACID_MAX_NUM;
+			res = false;
+		}
+		_os_spinunlock(phl_com->drv_priv,
+				&rxsc_entry->rxsc_lock, _bh, NULL);
+#ifdef DEBUG_PHL_RX
+		phl_info->rx_stats.rxsc_ampdu[1]++;
+#endif
+	} else {
+#ifdef DEBUG_PHL_RX
+		if (meta->ampdu)
+			phl_info->rx_stats.rxsc_ampdu[0]++;
+#endif
+	}
+
+	return res;
+}
+#endif
+
 static bool phl_manage_sta_reorder_buf(struct phl_info_t *phl_info,
                                        struct rtw_phl_rx_pkt *pkt,
                                        struct phl_tid_ampdu_rx *r,
@@ -780,9 +853,8 @@ static bool phl_manage_sta_reorder_buf(struct phl_info_t *phl_info,
 	}
 
 	if (r->sleep) {
-		PHL_INFO("tid = %d reorder buffer handling after wake up\n",
-		         r->tid);
-		PHL_INFO("Update head seq(0x%03x) to the first rx seq(0x%03x) after wake up\n",
+		PHL_INFO("Reorder buffer handling after wake up (tid=%u)\n", r->tid);
+		PHL_INFO("Update head seq 0x%03x to the first rx seq 0x%03x after wake up\n",
 		         r->head_seq_num, mpdu_seq_num);
 		r->head_seq_num = mpdu_seq_num;
 		head_seq_num = r->head_seq_num;
@@ -791,9 +863,13 @@ static bool phl_manage_sta_reorder_buf(struct phl_info_t *phl_info,
 
 	/* frame with out of date sequence number */
 	if (seq_less(mpdu_seq_num, head_seq_num)) {
-		PHL_TRACE(COMP_PHL_RECV, _PHL_DEBUG_, "Rx drop: old seq 0x%03x head 0x%03x\n",
-				meta->seq, r->head_seq_num);
+		PHL_TRACE(COMP_PHL_RECV, _PHL_DEBUG_, "Rx drop (out of date): old seq 0x%03x, head 0x%03x (tid=%u)\n",
+				meta->seq, r->head_seq_num, r->tid);
 		hci_trx_ops->recycle_rx_pkt(phl_info, pkt);
+#ifdef DEBUG_PHL_RX
+		phl_info->rx_stats.rx_drop_reorder++;
+		phl_info->rx_stats.reorder_seq_less++;
+#endif
 		return true;
 	}
 
@@ -813,9 +889,13 @@ static bool phl_manage_sta_reorder_buf(struct phl_info_t *phl_info,
 
 	/* check if we already stored this frame */
 	if (r->reorder_buf[index]) {
-		PHL_TRACE(COMP_PHL_RECV, _PHL_DEBUG_, "Rx drop: old seq 0x%03x head 0x%03x\n",
-				meta->seq, r->head_seq_num);
+		PHL_TRACE(COMP_PHL_RECV, _PHL_DEBUG_, "Rx drop (already stored): old seq 0x%03x, head 0x%03x (tid %d)\n",
+				meta->seq, r->head_seq_num, r->tid);
 		hci_trx_ops->recycle_rx_pkt(phl_info, pkt);
+#ifdef DEBUG_PHL_RX
+		phl_info->rx_stats.rx_drop_reorder++;
+		phl_info->rx_stats.reorder_dup++;
+#endif
 		return true;
 	}
 
@@ -828,7 +908,17 @@ static bool phl_manage_sta_reorder_buf(struct phl_info_t *phl_info,
 	if (mpdu_seq_num == r->head_seq_num &&
 		r->stored_mpdu_num == 0) {
 		r->head_seq_num = seq_inc(r->head_seq_num);
+		PHL_TRACE(COMP_PHL_RECV, _PHL_DEBUG_, "indicate directly, mpdu_seq_num 0x%03x (tid=%u)\n",
+		          mpdu_seq_num, r->tid);
+		#ifdef PHL_RXSC_AMPDU
+		_phl_rxsc_cache_entry(phl_info, r, meta);
+		#endif
 		return false;
+	}
+
+	if (r->stored_mpdu_num == 0) {
+		PHL_TRACE(COMP_PHL_RECV, _PHL_DEBUG_, "start reorder, mpdu_seq_num 0x%03x (tid=%u)\n",
+		          mpdu_seq_num, r->tid);
 	}
 
 	/* put the frame in the reordering buffer */
@@ -836,6 +926,9 @@ static bool phl_manage_sta_reorder_buf(struct phl_info_t *phl_info,
 	r->reorder_time[index] = _os_get_cur_time_ms();
 	r->stored_mpdu_num++;
 	phl_reorder_release(phl_info, r, frames);
+#ifdef DEBUG_PHL_RX
+	phl_info->rx_stats.rx_put_reorder++;
+#endif
 
 	return true;
 
@@ -853,6 +946,13 @@ enum rtw_phl_status phl_rx_reorder(struct phl_info_t *phl_info,
 	struct rtw_phl_stainfo_t *sta = NULL;
 	struct phl_tid_ampdu_rx *r;
 	struct phl_hci_trx_ops *hci_trx_ops = phl_info->hci_trx_ops;
+#ifdef CONFIG_PHL_TDLS
+	struct rtw_phl_tdls_ops *ops = &phl_info->tdls_info.ops;
+#endif
+
+	if (phl_info->phl_com->drv_mode == RTW_DRV_MODE_SNIFFER) {
+		goto dont_reorder;
+	}
 
 	/*
 	 * Remove FCS if is is appended
@@ -874,6 +974,11 @@ enum rtw_phl_status phl_rx_reorder(struct phl_info_t *phl_info,
 			  phl_rx->r.pkt_list[0].length -= 4;
 		  }
 	}
+
+	#ifdef PHL_RXSC_AMPDU
+	if (_phl_rxsc_cache_check(phl_info, phl_rx, meta))
+		goto dont_reorder;
+	#endif
 
 	if (phl_is_mp_mode(phl_info->phl_com))
 		goto dont_reorder;
@@ -901,29 +1006,30 @@ enum rtw_phl_status phl_rx_reorder(struct phl_info_t *phl_info,
 	if (meta->addr_cam_vld)
 		sta = rtw_phl_get_stainfo_by_macid(phl_info, meta->macid);
 
-	/* Otherwise, search STA by TA */
-	if (!sta || !sta->wrole) {
-		struct rtw_wifi_role_t *wrole;
-		wrole = phl_get_wrole_by_addr(phl_info, meta->mac_addr);
-		if (wrole)
-			sta = rtw_phl_get_stainfo_by_addr(phl_info,
-			                                  wrole, meta->ta);
-		if (!wrole || !sta) {
-			PHL_TRACE(COMP_PHL_RECV, _PHL_WARNING_,
-			          "%s(): stainfo or wrole not found, cam=%u, macid=%u\n",
-			          __FUNCTION__, meta->addr_cam, meta->macid);
+	if (!sta) {
+		PHL_TRACE(COMP_PHL_RECV, _PHL_WARNING_,
+		          "%s(): stainfo not found, bb_sel=%u, cam=%u, macid=%u\n",
+		          __FUNCTION__, meta->bb_sel, meta->addr_cam, meta->macid);
+		goto dont_reorder;
+	}
+	/* Ignore TDLS action frames for rx-reorder */
+	#ifdef CONFIG_PHL_TDLS
+	if (ops->check_tdls_frame) {
+		if (ops->check_tdls_frame(ops->priv, sta, &phl_rx->r)) {
+			meta->is_tdls_frame = 1;
 			goto dont_reorder;
 		}
 	}
-
+	#endif
 	phl_rx->r.tx_sta = sta;
 	phl_rx->r.rx_role = sta->wrole;
 
 	rtw_hal_set_sta_rx_sts(sta, false, meta);
 
 	if (tid >= ARRAY_SIZE(sta->tid_rx)) {
-		PHL_TRACE(COMP_PHL_RECV, _PHL_ERR_, "Fail: tid (%u) index out of range (%u)\n", tid, 8);
-		goto drop_frame;
+		PHL_TRACE(COMP_PHL_RECV, _PHL_ERR_, "Fail: tid (%u) index out of range (%u)\n",
+			tid, (u32)ARRAY_SIZE(sta->tid_rx));
+		goto dont_reorder;
 	}
 
 	_os_spinlock(drv_priv, &sta->tid_rx_lock, _bh, NULL);
@@ -944,10 +1050,16 @@ enum rtw_phl_status phl_rx_reorder(struct phl_info_t *phl_info,
 	return RTW_PHL_STATUS_SUCCESS;
 
 drop_frame:
+#ifdef DEBUG_PHL_RX
+	phl_info->rx_stats.rx_drop_reorder++;
+#endif
 	hci_trx_ops->recycle_rx_pkt(phl_info, phl_rx);
 	return RTW_PHL_STATUS_FAILURE;
 
 dont_reorder:
+#ifdef DEBUG_PHL_RX
+	phl_info->rx_stats.rx_dont_reorder++;
+#endif
 	list_add_tail(&phl_rx->list, frames);
 	return RTW_PHL_STATUS_SUCCESS;
 }
@@ -961,7 +1073,7 @@ u8 phl_check_recv_ring_resource(struct phl_info_t *phl_info)
 
 	wptr = (u16)_os_atomic_read(drv_priv, &ring->phl_idx);
 	rptr = (u16)_os_atomic_read(drv_priv, &ring->core_idx);
-	avail = phl_calc_avail_wptr(rptr, wptr, MAX_PHL_RING_ENTRY_NUM);
+	avail = phl_calc_avail_wptr(rptr, wptr, MAX_PHL_RX_RING_ENTRY_NUM);
 
 	if (0 == avail)
 		return false;
@@ -973,7 +1085,7 @@ void dump_phl_rx_ring(void *phl)
 {
 	struct phl_info_t *phl_info = (struct phl_info_t *)phl;
 	void *drv_priv = phl_to_drvpriv(phl_info);
-	s16	diff = 0;
+	s16 diff = 0;
 	u16 idx = 0, endidx = 0;
 	u16 phl_idx = 0, core_idx = 0;
 
@@ -986,14 +1098,14 @@ void dump_phl_rx_ring(void *phl)
 			core_idx,
 			phl_idx);
 
-	diff= phl_idx-core_idx;
+	diff = phl_idx - core_idx;
 	if(diff < 0)
-		diff= 4096+diff;
+		diff = MAX_PHL_RX_RING_ENTRY_NUM + diff;
 
 	endidx = diff > 5 ? (core_idx+6): phl_idx;
-	for (idx = core_idx+1; idx < endidx; idx++) {
+	for (idx = core_idx + 1; idx < endidx; idx++) {
 		PHL_TRACE(COMP_PHL_RECV, _PHL_DEBUG_, "entry[%d] = %p\n", idx,
-				phl_info->phl_rx_ring.entry[idx%4096]);
+				phl_info->phl_rx_ring.entry[idx % MAX_PHL_RX_RING_ENTRY_NUM]);
 	}
 }
 
@@ -1041,18 +1153,24 @@ void _phl_rx_statistics_reset(struct phl_info_t *phl_info)
 	void *drv = phl_to_drvpriv(phl_info);
 	struct phl_queue *sta_queue;
 	u8 i;
+	u8 idx = 0;
+	struct rtw_wifi_role_link_t *rlink = NULL;
 
 	for (i = 0; i< MAX_WIFI_ROLE_NUMBER; i++) {
 		role = &phl_com->wifi_roles[i];
 		if (role->active && (role->mstate == MLME_LINKED)) {
-			sta_queue = &role->assoc_sta_queue;
-			_os_spinlock(drv, &sta_queue->lock, _bh, NULL);
-			phl_list_for_loop(sta, struct rtw_phl_stainfo_t,
-						&sta_queue->queue, list) {
-				if (sta)
-					rtw_hal_set_sta_rx_sts(sta, true, NULL);
+			for (idx = 0; idx < role->rlink_num; idx++) {
+				rlink = get_rlink(role,idx);
+				sta_queue = &rlink->assoc_sta_queue;
+
+				_os_spinlock(drv, &sta_queue->lock, _bh, NULL);
+				phl_list_for_loop(sta, struct rtw_phl_stainfo_t,
+							&sta_queue->queue, list) {
+					if (sta)
+						rtw_hal_set_sta_rx_sts(sta, true, NULL);
+				}
+				_os_spinunlock(drv, &sta_queue->lock, _bh, NULL);
 			}
-			_os_spinunlock(drv, &sta_queue->lock, _bh, NULL);
 		}
 	}
 }
@@ -1080,7 +1198,7 @@ u16 rtw_phl_query_new_rx_num(void *phl)
 		rptr = (u16)_os_atomic_read(phl_to_drvpriv(phl_info),
 						&ring->core_idx);
 		new_rx = phl_calc_avail_rptr(rptr, wptr,
-						MAX_PHL_RING_ENTRY_NUM);
+						MAX_PHL_RX_RING_ENTRY_NUM);
 	}
 
 	return new_rx;
@@ -1102,7 +1220,7 @@ struct rtw_recv_pkt *rtw_phl_query_rx_pkt(void *phl)
 		rptr = (u16)_os_atomic_read(drv_priv, &ring->core_idx);
 
 		ring_res = phl_calc_avail_rptr(rptr, wptr,
-							MAX_PHL_RING_ENTRY_NUM);
+							MAX_PHL_RX_RING_ENTRY_NUM);
 
 		PHL_TRACE(COMP_PHL_RECV, _PHL_DEBUG_,
 			"[4] %s::[Query] phl_idx =%d , core_idx =%d , ring_res =%d\n",
@@ -1114,7 +1232,7 @@ struct rtw_recv_pkt *rtw_phl_query_rx_pkt(void *phl)
 		if (ring_res > 0) {
 			rptr = rptr + 1;
 
-			if (rptr >= MAX_PHL_RING_ENTRY_NUM) {
+			if (rptr >= MAX_PHL_RX_RING_ENTRY_NUM) {
 				rptr=0;
 				recvpkt = (struct rtw_recv_pkt *)ring->entry[rptr];
 				ring->entry[rptr]=NULL;
@@ -1180,61 +1298,112 @@ void rtw_phl_rx_bar(void *phl, struct rtw_phl_stainfo_t *sta, u8 tid, u16 seq)
 	struct phl_tid_ampdu_rx *r;
 	_os_list frames;
 
-	INIT_LIST_HEAD(&frames);
-
 	if (tid >= RTW_MAX_TID_NUM)
-		goto out;
+		return;
+
+	INIT_LIST_HEAD(&frames);
 
 	_os_spinlock(drv_priv, &sta->tid_rx_lock, _bh, NULL);
 
 	r = sta->tid_rx[tid];
 	if (!r) {
-		PHL_TRACE(COMP_PHL_RECV, _PHL_ERR_, "BAR for non-existing TID %d\n", tid);
-		goto out;
+		_os_spinunlock(drv_priv, &sta->tid_rx_lock, _bh, NULL);
+		PHL_TRACE(COMP_PHL_RECV, _PHL_ERR_, "%s: non-existing tid %u\n",
+		          __func__, tid);
+		return;
 	}
 
 	if (seq_less(seq, r->head_seq_num)) {
-		PHL_TRACE(COMP_PHL_RECV, _PHL_ERR_, "BAR Seq 0x%03x preceding head 0x%03x\n",
-					seq, r->head_seq_num);
-		goto out;
+		_os_spinunlock(drv_priv, &sta->tid_rx_lock, _bh, NULL);
+		PHL_TRACE(COMP_PHL_RECV, _PHL_WARNING_, "%s: bar seq 0x%03x, preceding head 0x%03x (tid=%u)\n",
+				  __func__, seq, r->head_seq_num, tid);
+		return;
 	}
 
-	PHL_TRACE(COMP_PHL_RECV, _PHL_INFO_, "BAR: TID %d Seq 0x%03x head 0x%03x\n",
-				tid, seq, r->head_seq_num);
+	PHL_TRACE(COMP_PHL_RECV, _PHL_INFO_, "%s: bar seq 0x%03x, head 0x%03x (tid=%u)\n",
+			  __func__, seq, r->head_seq_num, tid);
 
 	phl_release_reorder_frames(phl_info, r, seq, &frames);
-	phl_handle_rx_frame_list(phl_info, &frames);
 
-out:
 	_os_spinunlock(drv_priv, &sta->tid_rx_lock, _bh, NULL);
-}
 
-enum rtw_rx_status rtw_phl_get_rx_status(void *phl)
-{
-#ifdef CONFIG_USB_HCI
-	struct phl_info_t *phl_info = (struct phl_info_t *)phl;
-	enum rtw_hci_type hci_type = phl_info->phl_com->hci_type;
-
-	if (hci_type & RTW_HCI_USB)
-		return rtw_hal_get_usb_status(phl_info->hal);
-#endif
-
-	return RTW_STATUS_RX_OK;
+	phl_handle_rx_frame_list(phl_info, &frames);
 }
 
 enum rtw_phl_status
 rtw_phl_enter_mon_mode(void *phl, struct rtw_wifi_role_t *wrole)
 {
 	struct phl_info_t *phl_info = (struct phl_info_t *)phl;
-	enum rtw_hal_status status;
+	struct rtw_phl_com_t *phl_com = phl_info->phl_com;
+	enum rtw_rx_fltr_opt_mode cur_rx_fltr_mode;
+	enum rtw_hal_status hal_status;
+	enum rtw_phl_status phl_status;
+	struct rtw_wifi_role_link_t *rlink = NULL;
+	u8 idx = 0, rollback = 0;
 
-	status = rtw_hal_enter_mon_mode(phl_info->hal, wrole->hw_band);
-	if (status != RTW_HAL_STATUS_SUCCESS) {
-		PHL_TRACE(COMP_PHL_RECV, _PHL_ERR_,
-		          "%s(): rtw_hal_enter_mon_mode() failed, status=%d",
-		          __FUNCTION__, status);
+	if (phl_com->drv_mode != RTW_DRV_MODE_NORMAL)
 		return RTW_PHL_STATUS_FAILURE;
+
+	for (idx = 0; idx < wrole->rlink_num; idx++) {
+		rlink = get_rlink(wrole, idx);
+
+		cur_rx_fltr_mode =
+			rtw_hal_get_rxfltr_opt_mode(phl_info->hal, rlink->hw_band);
+
+		if (cur_rx_fltr_mode == RX_FLTR_OPT_MODE_SNIFFER)
+			continue;
+
+		hal_status = rtw_hal_enter_mon_mode(phl_info->hal, rlink->hw_band);
+		if (hal_status != RTW_HAL_STATUS_SUCCESS) {
+			PHL_TRACE(COMP_PHL_RECV, _PHL_ERR_,
+			          "%s(): rtw_hal_enter_mon_mode() failed, status=%d",
+			          __FUNCTION__, hal_status);
+
+			for (rollback = idx; rollback > 0; rollback--) {
+				rlink = &wrole->rlink[rollback-1];
+				rtw_hal_leave_mon_mode(phl_info->hal, rlink->hw_band);
+			}
+			return RTW_PHL_STATUS_FAILURE;
+		}
+
+		phl_status = rtw_phl_mr_set_rxfltr_type_by_mode(
+			phl_info, rlink, RX_FLTR_TYPE_MODE_MONITOR);
+		if (phl_status != RTW_PHL_STATUS_SUCCESS) {
+			PHL_TRACE(COMP_PHL_RECV, _PHL_ERR_,
+			          "%s(): rtw_phl_mr_set_rxfltr_type_by_mode() failed, phl_status=%d\n",
+			          __FUNCTION__, phl_status);
+			rtw_hal_leave_mon_mode(phl_info->hal, rlink->hw_band);
+			return RTW_PHL_STATUS_FAILURE;
+		}
+		hal_status = rtw_hal_set_append_fcs(phl_info->hal, true);
+		if (hal_status != RTW_HAL_STATUS_SUCCESS) {
+			PHL_TRACE(COMP_PHL_RECV, _PHL_ERR_,
+			          "%s(): rtw_hal_set_append_fcs() failed, hal_status=%d\n",
+			          __FUNCTION__, hal_status);
+			return RTW_PHL_STATUS_FAILURE;
+		}
+
+		hal_status = rtw_hal_acpt_crc_err_pkt(phl_info->hal, rlink->hw_band, true);
+		if (hal_status != RTW_HAL_STATUS_SUCCESS) {
+			PHL_TRACE(COMP_PHL_RECV, _PHL_ERR_,
+			          "%s(): rtw_hal_acpt_crc_err_pkt() failed, hal_status=%d\n",
+			          __FUNCTION__, hal_status);
+			return RTW_PHL_STATUS_FAILURE;
+		}
+		hal_status = rtw_hal_cfg_ppdu_sts_fltr(phl_info->hal, phl_info->phl_com, rlink->hw_band, 0);
+		if (hal_status != RTW_HAL_STATUS_SUCCESS) {
+			PHL_TRACE(COMP_PHL_RECV, _PHL_ERR_,
+				  "%s(): rtw_hal_cfg_ppdu_sts_fltr() failed, hal_status=%d\n",
+				  __FUNCTION__, hal_status);
+			return RTW_PHL_STATUS_FAILURE;
+		}
 	}
+
+#ifdef CONFIG_PHL_SNIFFER_SUPPORT
+	phl_com->ppdu_sts_info.sniffer_info_mode = SNIFFER_INFO_MODE_NORMAL; /* per packaet radiotap */
+
+	phl_com->drv_mode = RTW_DRV_MODE_SNIFFER;
+#endif
 
 	return RTW_PHL_STATUS_SUCCESS;
 }
@@ -1243,17 +1412,235 @@ enum rtw_phl_status
 rtw_phl_leave_mon_mode(void *phl, struct rtw_wifi_role_t *wrole)
 {
 	struct phl_info_t *phl_info = (struct phl_info_t *)phl;
-	enum rtw_hal_status status;
+	struct rtw_phl_com_t *phl_com = phl_info->phl_com;
+	enum rtw_hal_status hal_status;
+	enum rtw_phl_status phl_status;
+	struct rtw_wifi_role_link_t *rlink = NULL;
+	u8 idx = 0, rollback = 0;
 
-	status = rtw_hal_leave_mon_mode(phl_info->hal, wrole->hw_band);
-	if (status != RTW_HAL_STATUS_SUCCESS) {
-		PHL_TRACE(COMP_PHL_RECV, _PHL_ERR_,
-		          "%s(): rtw_hal_leave_mon_mode() failed, status=%d",
-		          __FUNCTION__, status);
+	if (phl_com->drv_mode != RTW_DRV_MODE_SNIFFER)
 		return RTW_PHL_STATUS_FAILURE;
+
+	for (idx = 0; idx < wrole->rlink_num; idx++) {
+		rlink = get_rlink(wrole, idx);
+
+
+		hal_status = rtw_hal_acpt_crc_err_pkt(phl_info->hal, rlink->hw_band, false);
+		if (hal_status != RTW_HAL_STATUS_SUCCESS) {
+			PHL_TRACE(COMP_PHL_RECV, _PHL_ERR_,
+			          "%s(): rtw_hal_acpt_crc_err_pkt() failed, hal_status=%d\n",
+			          __FUNCTION__, hal_status);
+			return RTW_PHL_STATUS_FAILURE;
+		}
+
+		hal_status = rtw_hal_set_append_fcs(phl_info->hal, false);
+		if (hal_status != RTW_HAL_STATUS_SUCCESS) {
+			PHL_TRACE(COMP_PHL_RECV, _PHL_ERR_,
+			          "%s(): rtw_hal_set_append_fcs() failed, hal_status=%d\n",
+			          __FUNCTION__, hal_status);
+		}
+
+		phl_status = rtw_phl_mr_set_rxfltr_type_by_mode(
+				phl_info, rlink, RX_FLTR_TYPE_MODE_ROLE_INIT);
+		if (phl_status != RTW_PHL_STATUS_SUCCESS) {
+			PHL_TRACE(COMP_PHL_RECV, _PHL_ERR_,
+			          "%s(): rtw_phl_mr_set_rxfltr_type_by_mode() failed, phl_status=%d\n",
+			          __FUNCTION__, phl_status);
+			return RTW_PHL_STATUS_FAILURE;
+	        }
+
+		hal_status = rtw_hal_cfg_ppdu_sts_fltr(phl_info->hal, phl_info->phl_com, rlink->hw_band, HAL_PPDU_HAS_CRC_OK);
+		if (hal_status != RTW_HAL_STATUS_SUCCESS) {
+			PHL_TRACE(COMP_PHL_RECV, _PHL_ERR_,
+				  "%s(): rtw_hal_cfg_ppdu_sts_fltr() failed, hal_status=%d\n",
+				  __FUNCTION__, hal_status);
+			return RTW_PHL_STATUS_FAILURE;
+	        }
+		hal_status = rtw_hal_leave_mon_mode(phl_info->hal, rlink->hw_band);
+		if (hal_status != RTW_HAL_STATUS_SUCCESS) {
+			PHL_TRACE(COMP_PHL_RECV, _PHL_ERR_,
+			          "%s(): rtw_hal_leave_mon_mode() failed, status=%d",
+			          __FUNCTION__, hal_status);
+
+			for (rollback = idx; rollback > 0; rollback--) {
+				rlink = &wrole->rlink[rollback-1];
+				rtw_hal_enter_mon_mode(phl_info->hal, rlink->hw_band);
+			}
+			return RTW_PHL_STATUS_FAILURE;
+		}
 	}
 
+	phl_com->drv_mode = RTW_DRV_MODE_NORMAL;
+
 	return RTW_PHL_STATUS_SUCCESS;
+}
+
+static enum rtw_phl_status
+_rtw_phl_get_rx_cnt_by_idx(struct phl_info_t *phl_info,
+			   enum phl_band_idx hw_band,
+			   enum phl_rxcnt_idx idx,
+			   u16 *rx_cnt)
+{
+	enum rtw_phl_status psts = RTW_PHL_STATUS_SUCCESS;
+	enum rtw_hal_status hsts;
+
+	hsts = rtw_hal_get_rx_cnt_by_idx(phl_info->hal, hw_band, idx, rx_cnt);
+
+	if (hsts != RTW_HAL_STATUS_SUCCESS)
+		psts = RTW_PHL_STATUS_FAILURE;
+
+	return psts;
+}
+
+static enum rtw_phl_status
+_rtw_phl_set_reset_rx_cnt(struct phl_info_t *phl_info,
+			  enum phl_band_idx hw_band)
+{
+	enum rtw_phl_status psts = RTW_PHL_STATUS_SUCCESS;
+	enum rtw_hal_status hsts;
+
+	hsts = rtw_hal_set_reset_rx_cnt(phl_info->hal, hw_band);
+
+	if (hsts != RTW_HAL_STATUS_SUCCESS)
+		psts = RTW_PHL_STATUS_FAILURE;
+
+	return psts;
+}
+
+struct cmd_rx_cnt_param {
+	enum phl_band_idx hw_band;
+	enum phl_rxcnt_idx idx;
+	u16 *rx_cnt;
+};
+
+static void _phl_cmd_rx_cnt_done(void *drv_priv,
+				 u8 *cmd,
+				 u32 cmd_len,
+				 enum rtw_phl_status status)
+{
+	struct cmd_rx_cnt_param *param = (struct cmd_rx_cnt_param *)cmd;
+
+	if (param)
+		_os_kmem_free(drv_priv, param, cmd_len);
+}
+
+enum rtw_phl_status
+phl_cmd_get_rx_cnt_by_idx_hdl(struct phl_info_t *phl_info, u8 *cmd)
+{
+	struct cmd_rx_cnt_param *param = (struct cmd_rx_cnt_param *)cmd;
+
+	return _rtw_phl_get_rx_cnt_by_idx(phl_info, param->hw_band, param->idx,
+					  param->rx_cnt);
+}
+
+enum rtw_phl_status
+phl_cmd_set_reset_rx_cnt_hdl(struct phl_info_t *phl_info, u8 *cmd)
+{
+	struct cmd_rx_cnt_param *param = (struct cmd_rx_cnt_param *)cmd;
+
+	return _rtw_phl_set_reset_rx_cnt(phl_info, param->hw_band);
+}
+
+enum rtw_phl_status
+rtw_phl_cmd_get_rx_cnt_by_idx(void *phl,
+			      enum phl_band_idx hw_band,
+			      enum phl_rxcnt_idx idx,
+			      u16 *rx_cnt,
+			      enum phl_cmd_type cmd_type,
+			      u32 cmd_timeout)
+{
+	struct phl_info_t *phl_info = (struct phl_info_t *)phl;
+	void *drv = phl_to_drvpriv(phl_info);
+	enum rtw_phl_status psts = RTW_PHL_STATUS_FAILURE;
+	struct cmd_rx_cnt_param *param = NULL;
+	u32 param_len = 0;
+
+	if (cmd_type == PHL_CMD_DIRECTLY) {
+		psts = _rtw_phl_get_rx_cnt_by_idx(phl_info, hw_band, idx, rx_cnt);
+		goto _exit;
+	}
+
+	param_len = sizeof(struct cmd_rx_cnt_param);
+	param = _os_kmem_alloc(drv, param_len);
+	if (param == NULL) {
+		PHL_ERR("%s: alloc param failed!\n", __func__);
+		psts = RTW_PHL_STATUS_RESOURCE;
+		goto _exit;
+	}
+
+	_os_mem_set(drv, param, 0, param_len);
+	param->hw_band = hw_band;
+	param->idx = idx;
+	param->rx_cnt = rx_cnt;
+
+	psts = phl_cmd_enqueue(phl_info,
+			       hw_band,
+			       MSG_EVT_RX_DBG_CNT_GET_BY_IDX,
+			       (u8 *)param,
+			       param_len,
+			       _phl_cmd_rx_cnt_done,
+			       cmd_type,
+			       cmd_timeout);
+	if (is_cmd_failure(psts)) {
+		/* Send cmd success, but wait cmd fail*/
+		psts = RTW_PHL_STATUS_FAILURE;
+	} else if (psts != RTW_PHL_STATUS_SUCCESS) {
+		/* Send cmd fail */
+		psts = RTW_PHL_STATUS_FAILURE;
+		_os_kmem_free(drv, param, param_len);
+	}
+
+_exit:
+	return psts;
+}
+
+enum rtw_phl_status
+rtw_phl_cmd_set_reset_rx_cnt(void *phl,
+			     enum phl_band_idx hw_band,
+			     enum phl_cmd_type cmd_type,
+			     u32 cmd_timeout)
+{
+	struct phl_info_t *phl_info = (struct phl_info_t *)phl;
+	void *drv = phl_to_drvpriv(phl_info);
+	enum rtw_phl_status psts = RTW_PHL_STATUS_FAILURE;
+	struct cmd_rx_cnt_param *param = NULL;
+	u32 param_len = 0;
+
+	if (cmd_type == PHL_CMD_DIRECTLY) {
+		psts = _rtw_phl_set_reset_rx_cnt(phl_info, hw_band);
+		goto _exit;
+	}
+
+	param_len = sizeof(struct cmd_rx_cnt_param);
+	param = _os_kmem_alloc(drv, param_len);
+	if (param == NULL) {
+		PHL_ERR("%s: alloc param failed!\n", __func__);
+		psts = RTW_PHL_STATUS_RESOURCE;
+		goto _exit;
+	}
+
+	_os_mem_set(drv, param, 0, param_len);
+	param->hw_band = hw_band;
+
+	psts = phl_cmd_enqueue(phl_info,
+			       hw_band,
+			       MSG_EVT_RX_DBG_CNT_RESET,
+			       (u8 *)param,
+			       param_len,
+			       _phl_cmd_rx_cnt_done,
+			       cmd_type,
+			       cmd_timeout);
+	if (is_cmd_failure(psts)) {
+		/* Send cmd success, but wait cmd fail*/
+		psts = RTW_PHL_STATUS_FAILURE;
+	} else if (psts != RTW_PHL_STATUS_SUCCESS) {
+		/* Send cmd fail */
+		psts = RTW_PHL_STATUS_FAILURE;
+		_os_kmem_free(drv, param, param_len);
+	}
+
+_exit:
+	return psts;
 }
 
 #ifdef CONFIG_PHL_RX_PSTS_PER_PKT
@@ -1277,6 +1664,31 @@ _phl_rx_proc_frame_list(struct phl_info_t *phl_info, struct phl_queue *pq)
 		phl_rx = (struct rtw_phl_rx_pkt *)pkt_list;
 		phl_info->hci_trx_ops->rx_handle_normal(phl_info, phl_rx);
 	}
+}
+
+void
+_phl_rx_copy_phy_sts(struct rtw_phl_ppdu_phy_info *src, struct rtw_phl_ppdu_phy_info *dest)
+{
+	u8 i = 0;
+
+	dest->is_valid = src->is_valid;
+	dest->is_pkt_with_data = src->is_pkt_with_data;
+	dest->rssi = src->rssi;
+	for (i = 0; i < RTW_PHL_MAX_RF_PATH; i++) {
+		dest->rssi_path[i] = src->rssi_path[i];
+		dest->snr_fd[i] = src->snr_fd[i];
+		dest->snr_td[i] = src->snr_td[i];
+	}
+	/* dest->ch_idx = src->ch_idx; */
+	dest->tx_bf = src->tx_bf;
+	dest->frame_type = src->frame_type;
+	dest->snr_fd_avg = src->snr_fd_avg;
+	dest->snr_td_avg = src->snr_td_avg;
+#ifdef CONFIG_PHL_SNIFFER_SUPPORT
+	/* sniffer info */
+	dest->radiotap_tag = src->radiotap_tag;
+	dest->radiotap_len = src->radiotap_len;
+#endif
 }
 
 enum rtw_phl_status
@@ -1340,7 +1752,8 @@ phl_rx_proc_phy_sts(struct phl_info_t *phl_info, struct rtw_phl_rx_pkt *ppdu_sts
 	 **/
 	phl_rx = (struct rtw_phl_rx_pkt *)frame;
 	if (upt_psts &&
-	   ((phl_rx->r.mdata.rx_rate != ppdu_sts->r.mdata.rx_rate) ||
+	   ((false == ppdu_sts->r.phy_info.is_pkt_with_data) ||
+	    (phl_rx->r.mdata.rx_rate != ppdu_sts->r.mdata.rx_rate) ||
 	    (phl_rx->r.mdata.bw != ppdu_sts->r.mdata.bw) ||
 	    (phl_rx->r.mdata.rx_gi_ltf != ppdu_sts->r.mdata.rx_gi_ltf) ||
 	    (phl_rx->r.mdata.ppdu_type != ppdu_sts->r.mdata.ppdu_type))) {
@@ -1356,25 +1769,33 @@ phl_rx_proc_phy_sts(struct phl_info_t *phl_info, struct rtw_phl_rx_pkt *ppdu_sts
 
 	if ((false == ppdu_sts->r.phy_info.is_valid) &&
 	    (true == psts_info->en_fake_psts)) {
-		if (RTW_FRAME_TYPE_MGNT == phl_rx->r.mdata.frame_type) {
-			ppdu_sts->r.phy_info.rssi =
-				rssi_stat->ma_rssi[RTW_RSSI_MGNT_ACAM_A1M];
-		} else if (RTW_FRAME_TYPE_DATA == phl_rx->r.mdata.frame_type) {
-			ppdu_sts->r.phy_info.rssi =
-				rssi_stat->ma_rssi[RTW_RSSI_DATA_ACAM_A1M];
-		} else if (RTW_FRAME_TYPE_CTRL == phl_rx->r.mdata.frame_type) {
-			ppdu_sts->r.phy_info.rssi =
-				rssi_stat->ma_rssi[RTW_RSSI_CTRL_ACAM_A1M];
+		if (phl_rx->r.phy_info.is_drvinfo_vld) {
+			ppdu_sts->r.phy_info.rssi = phl_rx->r.phy_info.signal_strength;
+			for(i = 0; i< RTW_PHL_MAX_RF_PATH ; i++) {
+				ppdu_sts->r.phy_info.rssi_path[i] =
+						phl_rx->r.phy_info.signal_strength;
+			}
 		} else {
-			ppdu_sts->r.phy_info.rssi =
-				rssi_stat->ma_rssi[RTW_RSSI_UNKNOWN];
+			if (RTW_FRAME_TYPE_MGNT == phl_rx->r.mdata.frame_type) {
+				ppdu_sts->r.phy_info.rssi =
+					rssi_stat->ma_rssi[RTW_RSSI_MGNT_ACAM_A1M];
+			} else if (RTW_FRAME_TYPE_DATA == phl_rx->r.mdata.frame_type) {
+				ppdu_sts->r.phy_info.rssi =
+					rssi_stat->ma_rssi[RTW_RSSI_DATA_ACAM_A1M];
+			} else if (RTW_FRAME_TYPE_CTRL == phl_rx->r.mdata.frame_type) {
+				ppdu_sts->r.phy_info.rssi =
+					rssi_stat->ma_rssi[RTW_RSSI_CTRL_ACAM_A1M];
+			} else {
+				ppdu_sts->r.phy_info.rssi =
+					rssi_stat->ma_rssi[RTW_RSSI_UNKNOWN];
+			}
+			for(i = 0; i< RTW_PHL_MAX_RF_PATH ; i++) {
+				ppdu_sts->r.phy_info.rssi_path[i] =
+						ppdu_sts->r.phy_info.rssi;
+			}
+			ppdu_sts->r.phy_info.ch_idx = rtw_hal_get_cur_ch(phl_info->hal,
+							phl_rx->r.mdata.bb_sel);
 		}
-		for(i = 0; i< RTW_PHL_MAX_RF_PATH ; i++) {
-			ppdu_sts->r.phy_info.rssi_path[i] =
-					ppdu_sts->r.phy_info.rssi;
-		}
-		ppdu_sts->r.phy_info.ch_idx = rtw_hal_get_cur_ch(phl_info->hal,
-						phl_rx->r.mdata.bb_sel);
 		ppdu_sts->r.phy_info.is_valid = true;
 	}
 
@@ -1382,8 +1803,18 @@ phl_rx_proc_phy_sts(struct phl_info_t *phl_info, struct rtw_phl_rx_pkt *ppdu_sts
 		if (false == upt_psts)
 			break;
 		phl_rx = (struct rtw_phl_rx_pkt *)frame;
-		_os_mem_cpy(d, &(phl_rx->r.phy_info), &(ppdu_sts->r.phy_info),
-			    sizeof(struct rtw_phl_ppdu_phy_info));
+		if (phl_rx->r.phy_info.is_drvinfo_vld) {
+			/* only copy the ppdu sts, avoid to override drvinfo */
+			_phl_rx_copy_phy_sts(&(ppdu_sts->r.phy_info) ,&(phl_rx->r.phy_info));
+		} else {
+			_os_mem_cpy(d, &(phl_rx->r.phy_info), &(ppdu_sts->r.phy_info),
+				    sizeof(struct rtw_phl_ppdu_phy_info));
+		}
+#ifdef CONFIG_PHL_SNIFFER_SUPPORT
+		if (SNIFFER_INFO_MODE_NORMAL == psts_info->sniffer_info_mode) {
+			_phl_rx_proc_snif_info_ex(phl_info, ppdu_sts, phl_rx);
+		}
+#endif
 	} while ((true == psts_info->psts_ampdu) &&
 		 (pq_get_next(d, &sts_entry->frames, frame, &frame, _bh)));
 
@@ -1472,55 +1903,202 @@ phl_rx_proc_wait_phy_sts(struct phl_info_t *phl_info,
 }
 #endif
 
-#ifdef CONFIG_PHY_INFO_NTFY
-void _phl_rx_post_proc_ppdu_sts(void* priv, struct phl_msg* msg)
+#ifdef CONFIG_PHL_SNIFFER_SUPPORT
+/**
+ * @brief
+ * call core_os ops api to process phl_sniffer info into radiotap information.
+ * core api may return an radiotap_tag to record the memrory pointer or array index,
+ * this value will be copied to each rx frame in PPDU with same PPDU status.
+ * @param phl_info
+ * @param phl_rx
+ */
+void phl_rx_proc_snif_info(struct phl_info_t *phl_info, struct rtw_phl_rx_pkt *phl_rx)
 {
-	struct phl_info_t *phl_info = (struct phl_info_t *)priv;
-	if (msg->inbuf && msg->inlen){
-		_os_kmem_free(phl_to_drvpriv(phl_info), msg->inbuf, msg->inlen);
-	}
-}
+	struct rtw_phl_evt_ops *ops = NULL;
+#ifdef CONFIG_PHL_RX_PSTS_PER_PKT
+	struct rtw_phl_ppdu_sts_info *psts_info = &(phl_info->phl_com->ppdu_sts_info);
+	struct rtw_phl_ppdu_sts_ent *sts_entry = NULL;
+	void *d = phl_to_drvpriv(phl_info);
+	_os_list *frame = NULL;
+	enum phl_band_idx band = HW_BAND_0;
+	struct rtw_phl_rx_pkt *normal_f_phl_rx = NULL;
+#endif
+	if (NULL == phl_info)
+		return;
 
-bool
-_phl_rx_proc_aggr_psts_ntfy(struct phl_info_t *phl_info,
-			    struct rtw_phl_ppdu_sts_ent *ppdu_sts_ent)
-{
-	struct rtw_phl_ppdu_sts_info *ppdu_info =
-			&phl_info->phl_com->ppdu_sts_info;
-	struct  rtw_phl_ppdu_sts_ntfy *psts_ntfy = NULL;
-	u8 i = 0;
-	bool ret = false;
+	if (phl_info->phl_com->drv_mode != RTW_DRV_MODE_SNIFFER)
+		return;
 
-	if (ppdu_info->msg_aggr_cnt == 0) {
-		/* reset entry valid status  */
-		for (i = 0; i < MAX_PSTS_MSG_AGGR_NUM; i++) {
-			ppdu_info->msg_aggr_buf[i].vld = false;
+	if (NULL == phl_rx)
+		return;
+
+#ifdef CONFIG_PHL_RX_PSTS_PER_PKT
+	/* try to get first mpdu, in order to use correct rx mdata to format the radiotap */
+	do {
+		if (false == psts_info->en_psts_per_pkt)
+			break;
+
+		if (phl_rx->r.mdata.ppdu_cnt >= PHL_MAX_PPDU_CNT)
+			break;
+
+		band = (phl_rx->r.mdata.bb_sel > 0) ? HW_BAND_1 : HW_BAND_0;
+
+		if (false == psts_info->en_ppdu_sts[band])
+			break;
+
+		if (phl_rx->r.mdata.ppdu_cnt != psts_info->cur_ppdu_cnt[band])
+			break;
+
+		sts_entry = &psts_info->sts_ent[band][psts_info->cur_ppdu_cnt[band]];
+
+		if (false == pq_get_front(d, &sts_entry->frames, &frame, _bh)) {
+			PHL_ERR(" %s list empty\n", __FUNCTION__);
+			break;
 		}
-	}
-	/* copy to the buf */
-	psts_ntfy = &ppdu_info->msg_aggr_buf[ppdu_info->msg_aggr_cnt];
-	psts_ntfy->frame_type = ppdu_sts_ent->frame_type;
-	_os_mem_cpy(phl_info->phl_com->drv_priv,
-		    &psts_ntfy->phy_info,
-		    &ppdu_sts_ent->phy_info,
-		    sizeof(struct rtw_phl_ppdu_phy_info));
-	_os_mem_cpy(phl_info->phl_com->drv_priv,
-		    psts_ntfy->src_mac_addr,
-		    ppdu_sts_ent->src_mac_addr,
-		    MAC_ADDRESS_LENGTH);
-	psts_ntfy->vld = true;
+		/* first mpdu in PPDU */
+		normal_f_phl_rx = (struct rtw_phl_rx_pkt *)frame;
+	} while (0);
 
-	/* update counter */
-	ppdu_info->msg_aggr_cnt++;
-	if (ppdu_info->msg_aggr_cnt >= MAX_PSTS_MSG_AGGR_NUM) {
-		ppdu_info->msg_aggr_cnt = 0;
-		ret = true;
-	}
-
-	return ret;
-}
 #endif
 
+	do {
+		ops = &phl_info->phl_com->evt_ops;
+
+		if (NULL != ops->os_process_snif_info) {
+#ifdef CONFIG_PHL_RX_PSTS_PER_PKT
+			if (NULL != normal_f_phl_rx) {
+				if (true == phl_rx->r.phy_info.is_snif_i_vld) {
+					_os_mem_cpy(phl_to_drvpriv(phl_info),
+						    &normal_f_phl_rx->r.phy_info,
+						    &phl_rx->r.phy_info,
+						    sizeof(struct rtw_phl_ppdu_phy_info));
+				}
+
+				phl_rx->r.phy_info.radiotap_tag =
+					ops->os_process_snif_info(
+							d,
+							(void *)&(normal_f_phl_rx->r),
+							&(phl_rx->r.phy_info.radiotap_len));
+			} else
+#endif
+			{
+				phl_rx->r.phy_info.radiotap_tag =
+					ops->os_process_snif_info(
+							d,
+							(void *)&(phl_rx->r),
+							&(phl_rx->r.phy_info.radiotap_len));
+			}
+
+			PHL_TRACE(COMP_PHL_SNIFF, _PHL_DEBUG_,
+				 "[PHL][Sniffer] phl_rx_proc_snif_info : radiotap_tag %d, size %d\n",
+				 phl_rx->r.phy_info.radiotap_tag,
+				 phl_rx->r.phy_info.radiotap_len);
+		}
+
+
+	} while (0);
+
+}
+
+/**
+ * @brief
+ * call core_os ops api to process phl_sniffer info into radiotap information.
+ * @param phl_info
+ * @param ppdu_sts
+ * @param normal_rx
+ */
+void _phl_rx_proc_snif_info_ex(struct phl_info_t *phl_info,
+			      struct rtw_phl_rx_pkt *ppdu_sts,
+			      struct rtw_phl_rx_pkt *normal_rx)
+{
+	struct rtw_phl_evt_ops *ops = NULL;
+	void *d = phl_to_drvpriv(phl_info);
+
+	if (NULL == phl_info)
+		return;
+
+	if (phl_info->phl_com->drv_mode != RTW_DRV_MODE_SNIFFER)
+		return;
+
+	if ((NULL == ppdu_sts) || (NULL == normal_rx))
+		return;
+
+	do {
+		ops = &phl_info->phl_com->evt_ops;
+
+		if (NULL != ops->os_process_snif_info) {
+
+			if (true == ppdu_sts->r.phy_info.is_snif_i_vld) {
+				_os_mem_cpy(phl_to_drvpriv(phl_info),
+					    &normal_rx->r.phy_info,
+					    &ppdu_sts->r.phy_info,
+					    sizeof(struct rtw_phl_ppdu_phy_info));
+			}
+
+			normal_rx->r.phy_info.radiotap_tag =
+				ops->os_process_snif_info(
+						d,
+						(void *)&(normal_rx->r),
+						&(normal_rx->r.phy_info.radiotap_len));
+
+
+			PHL_TRACE(COMP_PHL_SNIFF, _PHL_INFO_,
+				 "[PHL][Sniffer] _phl_rx_proc_snif_info_ex : radiotap_tag %d, size %d\n",
+				 normal_rx->r.phy_info.radiotap_tag,
+				 normal_rx->r.phy_info.radiotap_len);
+		}
+
+
+	} while (0);
+
+}
+
+
+/**
+ * @brief
+ * call core_os ops api to process phl_sniffer info into radiotap information.
+ * @param phl_info
+ * @param ppdu_sts
+ * @param normal_rx
+ */
+void phl_rx_proc_snif_info_wo_psts(struct phl_info_t *phl_info,
+				   struct rtw_phl_rx_pkt *normal_rx)
+{
+	struct rtw_phl_evt_ops *ops = NULL;
+	void *d = phl_to_drvpriv(phl_info);
+
+	if (NULL == phl_info)
+		return;
+
+	if (phl_info->phl_com->drv_mode != RTW_DRV_MODE_SNIFFER)
+		return;
+
+	if (NULL == normal_rx)
+		return;
+
+	do {
+		ops = &phl_info->phl_com->evt_ops;
+
+		if (NULL != ops->os_process_snif_info) {
+
+			normal_rx->r.phy_info.radiotap_tag =
+				ops->os_process_snif_info(
+						d,
+						(void *)&(normal_rx->r),
+						&(normal_rx->r.phy_info.radiotap_len));
+
+
+			PHL_TRACE(COMP_PHL_SNIFF, _PHL_DEBUG_,
+				 "[PHL][Sniffer] phl_rx_proc_snif_info_wo_psts : radiotap_tag %d, size %d\n",
+				 normal_rx->r.phy_info.radiotap_tag,
+				 normal_rx->r.phy_info.radiotap_len);
+		}
+
+	} while (0);
+
+}
+
+#endif
 void
 phl_rx_proc_ppdu_sts(struct phl_info_t *phl_info, struct rtw_phl_rx_pkt *phl_rx)
 {
@@ -1528,10 +2106,7 @@ phl_rx_proc_ppdu_sts(struct phl_info_t *phl_info, struct rtw_phl_rx_pkt *phl_rx)
 	struct rtw_phl_ppdu_sts_info *ppdu_info = NULL;
 	struct rtw_phl_ppdu_sts_ent *ppdu_sts_ent = NULL;
 	struct rtw_phl_stainfo_t *psta = NULL;
-#ifdef CONFIG_PHY_INFO_NTFY
-	struct  rtw_phl_ppdu_sts_ntfy *psts_ntfy;
-	void *d = phl_to_drvpriv(phl_info);
-#endif
+
 	enum phl_band_idx band = HW_BAND_0;
 	struct rtw_rssi_info *rssi_sts;
 
@@ -1602,44 +2177,10 @@ phl_rx_proc_ppdu_sts(struct phl_info_t *phl_info, struct rtw_phl_rx_pkt *phl_rx)
 			}
 		}
 	}
-
-#ifdef CONFIG_PHY_INFO_NTFY
-	/*2. prepare and send psts notify to core */
-	if((RTW_FRAME_TYPE_BEACON == ppdu_sts_ent->frame_type) ||
-	   (RTW_FRAME_TYPE_PROBE_RESP == ppdu_sts_ent->frame_type)) {
-
-		if (false == _phl_rx_proc_aggr_psts_ntfy(phl_info,
-							 ppdu_sts_ent)) {
-			return;
-		}
-
-		/* send aggr psts ntfy*/
-		psts_ntfy = (struct rtw_phl_ppdu_sts_ntfy *)_os_kmem_alloc(d,
-				MAX_PSTS_MSG_AGGR_NUM * sizeof(struct rtw_phl_ppdu_sts_ntfy));
-		if (psts_ntfy == NULL) {
-			PHL_ERR("%s: alloc ppdu sts for ntfy fail.\n", __func__);
-			return;
-		}
-
-		_os_mem_cpy(phl_info->phl_com->drv_priv,
-			    psts_ntfy,
-			    &ppdu_info->msg_aggr_buf,
-			    (MAX_PSTS_MSG_AGGR_NUM *
-			     sizeof(struct rtw_phl_ppdu_sts_ntfy)));
-
-		msg.inbuf = (u8 *)psts_ntfy;
-		msg.inlen = (MAX_PSTS_MSG_AGGR_NUM *
-			     sizeof(struct rtw_phl_ppdu_sts_ntfy));
-		SET_MSG_MDL_ID_FIELD(msg.msg_id, PHL_MDL_PSTS);
-		SET_MSG_EVT_ID_FIELD(msg.msg_id, MSG_EVT_RX_PSTS);
-		attr.completion.completion = _phl_rx_post_proc_ppdu_sts;
-		attr.completion.priv = phl_info;
-		if (phl_msg_hub_send(phl_info, &attr, &msg) != RTW_PHL_STATUS_SUCCESS) {
-			PHL_ERR("%s: send msg_hub failed\n", __func__);
-			_os_kmem_free(d, psts_ntfy,
-				      (MAX_PSTS_MSG_AGGR_NUM *
-				       sizeof(struct rtw_phl_ppdu_sts_ntfy)));
-		}
+#ifdef CONFIG_PHL_SNIFFER_SUPPORT
+	/* sniffer info for high performance mode : only process once in recving ppdu_sts */
+	if (SNIFFER_INFO_MODE_HIGH_PERFORMANCE == ppdu_info->sniffer_info_mode) {
+		phl_rx_proc_snif_info(phl_info, phl_rx);
 	}
 #endif
 }
@@ -1647,9 +2188,13 @@ phl_rx_proc_ppdu_sts(struct phl_info_t *phl_info, struct rtw_phl_rx_pkt *phl_rx)
 void phl_rx_wp_report_record_sts(struct phl_info_t *phl_info,
 				 u8 macid, u16 ac_queue, u8 txsts)
 {
+#if defined(CONFIG_PHL_RELEASE_RPT_ENABLE) || defined(CONFIG_PCI_HCI)
 	struct rtw_phl_stainfo_t *phl_sta = NULL;
 	struct rtw_hal_stainfo_t *hal_sta = NULL;
 	struct rtw_wp_rpt_stats *wp_rpt_stats= NULL;
+
+	if (ac_queue >= RTW_MAX_WP_RPT_AC_NUM(phl_info->hal))
+		return;
 
 	phl_sta = rtw_phl_get_stainfo_by_macid(phl_info, macid);
 
@@ -1692,31 +2237,66 @@ void phl_rx_wp_report_record_sts(struct phl_info_t *phl_info,
 		PHL_TRACE(COMP_PHL_DBG, _PHL_DEBUG_, "%s: PHL_STA not found\n",
 				__FUNCTION__);
 	}
+#endif
+	return;
 }
+
+
+void _phl_handle_ppdu_sts_q(struct phl_info_t *phl_info)
+{
+#ifdef CONFIG_PHL_RX_PSTS_PER_PKT
+	struct rtw_phl_com_t *phl_com = phl_info->phl_com;
+	struct rtw_phl_ppdu_sts_ent *sts_entry = NULL;
+	void *d = phl_to_drvpriv(phl_info);
+	u8 i = 0;
+	u8 j = 0;
+
+	for (j = 0; j < HW_BAND_MAX; j++) {
+		for (i = 0; i < PHL_MAX_PPDU_CNT; i++) {
+			sts_entry = &phl_com->ppdu_sts_info.sts_ent[j][i];
+
+			if (0 != sts_entry->frames.cnt) {
+				PHL_TRACE(COMP_PHL_PSTS, _PHL_INFO_, "band %d ; ppdu_cnt %d queue is not empty \n",
+				          j, i);
+				_phl_rx_proc_frame_list(phl_info,
+				                        &sts_entry->frames);
+				pq_reset(d, &(sts_entry->frames), _bh);
+			}
+		}
+	}
+#else
+	return;
+#endif
+}
+
+void phl_handle_queued_rx(struct phl_info_t *phl_info)
+{
+	_phl_handle_ppdu_sts_q(phl_info);
+}
+
 
 static void _dump_rx_reorder_info(struct phl_info_t *phl_info,
 				  struct rtw_phl_stainfo_t *sta)
 {
 	void *drv_priv = phl_to_drvpriv(phl_info);
-	_os_spinlockfg sp_flags;
 	u8 i;
 
-	PHL_INFO("dump rx reorder buffer info:\n");
+	PHL_INFO("[PHL_RX] dump rx reorder buffer info:\n");
 	for (i = 0; i < ARRAY_SIZE(sta->tid_rx); i++) {
 
-		_os_spinlock(drv_priv, &sta->tid_rx_lock, _irq, &sp_flags);
+		_os_spinlock(drv_priv, &sta->tid_rx_lock, _bh, NULL);
 		if (sta->tid_rx[i]) {
 			PHL_INFO("== tid = %d ==\n", sta->tid_rx[i]->tid);
 			PHL_INFO("head_seq_num = %d\n",
 				 sta->tid_rx[i]->head_seq_num);
-			PHL_INFO("stored_mpdu_num = %d\n",
+			PHL_INFO("[PHL_RX] stored_mpdu_num = %d\n",
 				 sta->tid_rx[i]->stored_mpdu_num);
 			PHL_INFO("ssn = %d\n", sta->tid_rx[i]->ssn);
 			PHL_INFO("buf_size = %d\n", sta->tid_rx[i]->buf_size);
 			PHL_INFO("started = %d\n", sta->tid_rx[i]->started);
 			PHL_INFO("removed = %d\n", sta->tid_rx[i]->removed);
 		}
-		_os_spinunlock(drv_priv, &sta->tid_rx_lock, _irq, &sp_flags);
+		_os_spinunlock(drv_priv, &sta->tid_rx_lock, _bh, NULL);
 	}
 }
 
@@ -1727,22 +2307,28 @@ void phl_dump_all_sta_rx_info(struct phl_info_t *phl_info)
 	struct rtw_wifi_role_t *role = NULL;
 	void *drv = phl_to_drvpriv(phl_info);
 	struct phl_queue *sta_queue;
-	_os_spinlockfg sp_flags;
 	u8 i;
+	u8 idx = 0;
+	struct rtw_wifi_role_link_t *rlink = NULL;
 
-	PHL_INFO("dump all sta rx info:\n");
+	PHL_INFO("[PHL_RX] dump all sta rx info:\n");
 	for (i = 0; i < MAX_WIFI_ROLE_NUMBER; i++) {
 		role = &phl_com->wifi_roles[i];
 		if (role->active) {
-			PHL_INFO("wrole idx = %d\n", i);
-			PHL_INFO("wrole type = %d\n", role->type);
-			PHL_INFO("wrole mstate = %d\n", role->mstate);
+			PHL_INFO("[PHL_RX] wrole idx = %d\n", i);
+			PHL_INFO("[PHL_RX] wrole type = %d\n", role->type);
+			PHL_INFO("[PHL_RX] wrole mstate = %d\n", role->mstate);
 
-			sta_queue = &role->assoc_sta_queue;
-			_os_spinlock(drv, &sta_queue->lock, _irq, &sp_flags);
-			phl_list_for_loop(sta, struct rtw_phl_stainfo_t,
-						&sta_queue->queue, list) {
-				PHL_INFO("%s MACID:%d %02x:%02x:%02x:%02x:%02x:%02x \n",
+			for (idx = 0; idx < role->rlink_num; idx++) {
+				rlink = get_rlink(role,idx);
+				PHL_INFO("rlink idx = %u\n", idx);
+				PHL_INFO("rlink mstate = %d\n", rlink->mstate);
+				sta_queue = &rlink->assoc_sta_queue;
+
+				_os_spinlock(drv, &sta_queue->lock, _bh, NULL);
+				phl_list_for_loop(sta, struct rtw_phl_stainfo_t,
+							&sta_queue->queue, list) {
+					PHL_INFO("%s MACID:%d %02x:%02x:%02x:%02x:%02x:%02x \n",
 					 __func__, sta->macid,
 					 sta->mac_addr[0],
 					 sta->mac_addr[1],
@@ -1750,9 +2336,10 @@ void phl_dump_all_sta_rx_info(struct phl_info_t *phl_info)
 					 sta->mac_addr[3],
 					 sta->mac_addr[4],
 					 sta->mac_addr[5]);
-				_dump_rx_reorder_info(phl_info, sta);
+					_dump_rx_reorder_info(phl_info, sta);
+				}
+				_os_spinunlock(drv, &sta_queue->lock, _bh, NULL);
 			}
-			_os_spinunlock(drv, &sta_queue->lock, _irq, &sp_flags);
 		}
 	}
 }
@@ -1773,4 +2360,16 @@ void phl_rx_dbg_dump(struct phl_info_t *phl_info, u8 band_idx)
 		PHL_TRACE(COMP_PHL_DBG, _PHL_ERR_, "%s: cmd enqueue fail!\n",
 			  __func__);
 	}
+
 }
+
+#ifdef CONFIG_PCI_HCI
+u32 rtw_phl_get_hw_cnt_rdu(void *phl)
+{
+	struct phl_info_t *phl_info = (struct phl_info_t *)phl;
+	struct rtw_hal_com_t *hal_com = rtw_hal_get_halcom(phl_info->hal);
+
+	return hal_com->trx_stat.rx_rdu_cnt;
+}
+#endif
+

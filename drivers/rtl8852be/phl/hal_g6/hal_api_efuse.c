@@ -190,9 +190,25 @@ rtw_hal_get_efuse_info(void *hal,
 	return status;
 }
 
-void rtw_hal_efuse_process(struct hal_info_t *hal_info, char *ic_name)
+void rtw_hal_efuse_process(struct rtw_phl_com_t *phl_com,
+                           struct hal_info_t *hal_info,
+                           char *ic_name
+)
 {
+	if(rtw_efuse_is_processed(hal_info->efuse) == true) {
+		PHL_INFO("%s EFUSE module is already initialized.\n", __FUNCTION__);
+		return;
+	}
+
+#ifdef CONFIG_PHL_FW_DUMP_EFUSE
+	rtw_phl_fw_dump_efuse_precfg(phl_com);
+#endif
+
 	rtw_efuse_process(hal_info->efuse, ic_name);
+
+#ifdef CONFIG_PHL_FW_DUMP_EFUSE
+	rtw_phl_fw_dump_efuse_postcfg(phl_com);
+#endif
 }
 
 enum rtw_hal_status rtw_hal_efuse_init(struct rtw_phl_com_t *phl_com,

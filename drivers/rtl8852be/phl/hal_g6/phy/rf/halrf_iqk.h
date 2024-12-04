@@ -33,9 +33,13 @@
 #define ID_NBTXK 0x6
 #define ID_NBRXK 0x7
 #define ID_FLOK_vbuffer 0x8
-
+#define ID_A_FLoK_coarse 0x9
+#define ID_G_FLoK_coarse 0xa
+#define ID_A_FLoK_fine 0xb
+#define ID_G_FLoK_fine 0xc
 #define ID_TX_PAD_GainGapK 0xe
 #define ID_TX_PA_GainGapK 0xf
+#define ID_IQK_Restore 0x10
 
 /*@-----------------------End Define Parameters-----------------------*/
 
@@ -87,7 +91,23 @@ struct halrf_iqk_info {
 	u8 iqk_mcc_ch[2][NUM];
 	u8 iqk_table_idx[NUM];
 	bool is_fw_iqk;
+	u32	time;
+	u32 lok_0x58[2];
+	u32 lok_0x5c[2];
+	u32 lok_0x7c[2];	
 };
+
+enum halrf_iqk_dz{
+	DZ_IQK_ALIMTK_TIMEOUT1	= BIT(0),
+	DZ_IQK_ALIMTK_TIMEOUT2	= BIT(1),
+	DZ_LOK_ALIMTK	= BIT(2),	
+	DZ_TXIQK_ALIMTK	= BIT(3),	
+	DZ_RXIQK_ALIMTK = BIT(4),	
+	DZ_TXXYM_ALIMTK = BIT(5),
+	DZ_RXXYM_ALIMTK = BIT(6),
+	DZ_RXAGC_ALIMTK = BIT(7),
+};
+
 
 void halrf_iqk_init(struct rf_info *rf);
 void halrf_iqk(struct rf_info *rf, enum phl_phy_idx phy_idx, bool force);

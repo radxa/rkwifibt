@@ -18,6 +18,7 @@
 #define TYPE_DATA_FRAME 0x08
 #define TYPE_ACTION_FRAME 0xD0
 #define TYPE_NULL_FRAME 0x48
+#define TYPE_QOS_NULL_FRAME 0xC8
 #define TYPE_PROBE_REQ_FRAME 0x40
 
 #define HDR_OFFSET_FRAME_CONTROL 0
@@ -27,6 +28,7 @@
 #define HDR_OFFSET_ADDRESS3 16
 #define HDR_OFFSET_SEQUENCE 22
 #define HDR_OFFSET_ADDRESS4 24
+#define HDR_OFFSET_QOS_CONTROL 24
 
 #define SET_80211_PKT_HDR_FRAME_CONTROL(_hdr, _val)	\
 	WriteLE2Byte(_hdr, _val)
@@ -63,10 +65,13 @@
 	_os_mem_cpy(_h, _hdr+HDR_OFFSET_ADDRESS3, _val, MAC_ALEN)
 #define SET_80211_PKT_HDR_FRAGMENT_SEQUENCE(_hdr, _val) \
 	WriteLE2Byte((u8 *)(_hdr)+HDR_OFFSET_SEQUENCE, _val)
+#define SET_80211_PKT_HDR_QOS_CONTROL(_hdr, _val) \
+	WriteLE2Byte((u8 *)(_hdr)+HDR_OFFSET_QOS_CONTROL, _val)
 
 
 #define NOT_USED 0xFF
 #define NULL_PACKET_LEN 24
+#define QOS_NULL_PACKET_LEN 26
 #define MAC_HDR_LEN 24
 #define FCS_LEN 4
 
@@ -129,14 +134,6 @@
 #define SET_EAPOLKEY_KEY_INFO(_ptr, _val) WriteBE2Byte(_ptr+EAPOLKEY_OFFSET_KEY_INFO, _val)
 #define SET_EAPOLKEY_REPLAY_CNT(_h, _ptr, _val)	_os_mem_cpy(_h, _ptr+EAPOLKEY_OFFSET_REPLAY_CNT, _val, 8);
 
-#define HAL_PKT_OFLD_ADD(_pkt, _id, _pkt_buf, _len) \
-rtw_hal_pkt_ofld((_pkt)->phl_info->hal, _id, PKT_OFLD_ADD, _pkt_buf, _len)
-#define HAL_PKT_OFLD_READ(_pkt, _id) \
-rtw_hal_pkt_ofld((_pkt)->phl_info->hal, _id, PKT_OFLD_READ, NULL, NULL)
-#define HAL_PKT_OFLD_DEL(_pkt, _id) \
-rtw_hal_pkt_ofld((_pkt)->phl_info->hal, _id, PKT_OFLD_DEL, NULL, NULL)
-
-
 struct pkt_ofld_obj {
 	_os_mutex mux;
 	struct phl_info_t *phl_info;
@@ -171,22 +168,26 @@ struct rtw_pkt_ofld_arp_rsp_info {
 	u8 a2[MAC_ADDRESS_LENGTH];
 	u8 a3[MAC_ADDRESS_LENGTH];
 	u8 host_ipv4_addr[IPV4_ADDRESS_LENGTH];
+	u8 remote_mac_addr[MAC_ADDRESS_LENGTH];
 	u8 remote_ipv4_addr[IPV4_ADDRESS_LENGTH];
-	u8 sec_hdr;
+	u8 protect_bit;
+	u8 sec_hdr_len;
 };
 
 struct rtw_pkt_ofld_na_info {
 	u8 a1[MAC_ADDRESS_LENGTH];
 	u8 a2[MAC_ADDRESS_LENGTH];
 	u8 a3[MAC_ADDRESS_LENGTH];
-	u8 sec_hdr;
+	u8 protect_bit;
+	u8 sec_hdr_len;
 };
 
 struct rtw_pkt_ofld_eapol_key_info {
 	u8 a1[MAC_ADDRESS_LENGTH];
 	u8 a2[MAC_ADDRESS_LENGTH];
 	u8 a3[MAC_ADDRESS_LENGTH];
-	u8 sec_hdr;
+	u8 protect_bit;
+	u8 sec_hdr_len;
 	u8 key_desc_ver;
 	u8 replay_cnt[8];
 };
@@ -195,7 +196,8 @@ struct rtw_pkt_ofld_sa_query_info {
 	u8 a1[MAC_ADDRESS_LENGTH];
 	u8 a2[MAC_ADDRESS_LENGTH];
 	u8 a3[MAC_ADDRESS_LENGTH];
-	u8 sec_hdr;
+	u8 protect_bit;
+	u8 sec_hdr_len;
 };
 
 struct rtw_pkt_ofld_realwow_kapkt_info {
@@ -217,21 +219,18 @@ struct rtw_pkt_ofld_realwow_wp_info {
 /* init api */
 enum rtw_phl_status phl_pkt_ofld_init(struct phl_info_t *phl_info);
 void phl_pkt_ofld_deinit(struct phl_info_t *phl_info);
-void phl_pkt_ofld_reset_all_entry(struct phl_info_t *phl_info);
+void phl_pkt_ofld_del_all_entry_req(struct phl_info_t *phl_info);
 
 enum rtw_phl_status phl_pkt_ofld_add_entry(struct phl_info_t *phl_info, u16 macid);
 enum rtw_phl_status phl_pkt_ofld_del_entry(struct phl_info_t *phl_info, u16 macid);
 
-
-#define RTW_PHL_PKT_OFLD_REQ(_phl, _macid, _type, _seq, _buf)	\
-	phl_pkt_ofld_request(_phl, _macid, _type, _seq, __func__, _buf)
-enum rtw_phl_status phl_pkt_ofld_request(struct phl_info_t *phl_info,
+enum rtw_phl_status rtw_phl_pkt_ofld_request(struct phl_info_t *phl_info,
 						u16 macid, u8 type,
-						u32 *token, const char *req_name,
-						void *buf);
+						u32 *token, void *buf, const char *req_name);
 
-enum rtw_phl_status phl_pkt_ofld_cancel(struct phl_info_t *phl_info,
+enum rtw_phl_status rtw_phl_pkt_ofld_cancel(struct phl_info_t *phl_info,
 					u16 macid, u8 type, u32 *token);
+
 void phl_pkt_ofld_show_info(struct phl_info_t *phl_info);
 u8 phl_pkt_ofld_get_id(struct phl_info_t *phl_info, u16 macid, u8 type);
 const char *phl_get_pkt_ofld_str(enum pkt_ofld_type type);

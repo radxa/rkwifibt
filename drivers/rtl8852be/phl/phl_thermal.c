@@ -24,13 +24,16 @@ static void _phl_thermal_protect_disable_all_txop(
 	struct rtw_phl_com_t *phl_com = phl_info->phl_com;
 	struct mr_ctl_t *mr_ctl = phlcom_to_mr_ctrl(phl_com);
 	struct rtw_wifi_role_t *wrole = NULL;
+	struct rtw_wifi_role_link_t *rlink = NULL;
+	struct rtw_phl_mld_t *mld = NULL;
 	struct rtw_phl_stainfo_t *sta = NULL;
 	struct rtw_edca_param edca = {0};
 	u8 i = 0;
+	u8 idx = 0;
 
 	for (i = 0; i < MAX_WIFI_ROLE_NUMBER; i++) {
 		if (mr_ctl->role_map & BIT(i)) {
-			wrole = rtw_phl_get_wrole_by_ridx(phl_info->phl_com, i);
+			wrole = phl_get_wrole_by_ridx(phl_info, i);
 			if(wrole){
 				if(wrole->mstate == MLME_LINKED)
 					break;
@@ -43,19 +46,24 @@ static void _phl_thermal_protect_disable_all_txop(
 	if(wrole == NULL)
 		return;
 
-	sta = rtw_phl_get_stainfo_self(phl_info, wrole);
+	mld = rtw_phl_get_mld_self(phl_info, wrole);
+	for (idx = 0; idx < wrole->rlink_num; idx++) {
+		rlink = get_rlink(wrole, idx);
+		sta = mld->phl_sta[idx];
 
-	if(sta == NULL)
-		return;
+		if(sta == NULL)
+			return;
 
-	for(i = 0; i < 4;i++){
-		edca.ac = i;
-		edca.param = sta->asoc_cap.edca[edca.ac].param;
-		if(disable)
-			edca.param &= 0x0000FFFF;
-		if(rtw_hal_set_edca(phl_info->hal, wrole, edca.ac, edca.param)
-		   != RTW_HAL_STATUS_SUCCESS)
-			PHL_ERR("%s Config edca fail\n", __FUNCTION__);
+		for(i = 0; i < 4;i++){
+			edca.ac = i;
+			edca.param = sta->asoc_cap.edca[edca.ac].param;
+			if(disable)
+				edca.param &= 0x0000FFFF;
+
+			if(rtw_hal_set_edca(phl_info->hal, rlink, edca.ac, edca.param)
+			   != RTW_HAL_STATUS_SUCCESS)
+				PHL_ERR("%s Config edca fail\n", __FUNCTION__);
+		}
 	}
 }
 
@@ -66,12 +74,14 @@ static void _phl_thermal_protect_reduce_ampdu_num(
 	struct rtw_phl_com_t *phl_com = phl_info->phl_com;
 	struct mr_ctl_t *mr_ctl = phlcom_to_mr_ctrl(phl_com);
 	struct rtw_wifi_role_t *wrole = NULL;
+	struct rtw_phl_mld_t *mld = NULL;
 	struct rtw_phl_stainfo_t *sta = NULL;
 	u8 i = 0;
+	u8 idx = 0;
 
 	for (i = 0; i < MAX_WIFI_ROLE_NUMBER; i++) {
 		if (mr_ctl->role_map & BIT(i)) {
-			wrole = rtw_phl_get_wrole_by_ridx(phl_info->phl_com, i);
+			wrole = phl_get_wrole_by_ridx(phl_info, i);
 			if(wrole){
 				if(wrole->mstate == MLME_LINKED)
 					break;
@@ -84,32 +94,40 @@ static void _phl_thermal_protect_reduce_ampdu_num(
 	if(wrole == NULL)
 		return;
 
-	sta = rtw_phl_get_stainfo_self(phl_info, wrole);
+	mld = rtw_phl_get_mld_self(phl_info, wrole);
+	for (idx = 0; idx < wrole->rlink_num; idx++) {
+		sta = mld->phl_sta[idx];
 
-	if(sta == NULL)
-		return;
+		if(sta == NULL)
+			return;
 
-	if(ratio != 0){
-		if(rtw_hal_thermal_protect_cfg_tx_ampdu(phl_info->hal, sta, ratio)
-		   != RTW_HAL_STATUS_SUCCESS)
-			PHL_ERR("%s Thermal protect cfg tx ampdu fail\n", __FUNCTION__);
-	}
-	else{
-		if(sta->asoc_cap.num_ampdu_bk != 0){
-			sta->asoc_cap.num_ampdu = sta->asoc_cap.num_ampdu_bk;
-			sta->asoc_cap.num_ampdu_bk = 0;
+		if(ratio != 0){
+			if(rtw_hal_thermal_protect_cfg_tx_ampdu(phl_info->hal, sta, ratio)
+			   != RTW_HAL_STATUS_SUCCESS)
+				PHL_ERR("%s Thermal protect cfg tx ampdu fail\n", __FUNCTION__);
 		}
-		if(rtw_hal_cfg_tx_ampdu(phl_info->hal, sta) !=
-		   RTW_HAL_STATUS_SUCCESS)
-			PHL_ERR("%s Thermal protect restore tx ampdu fail\n", __FUNCTION__);
+		else{
+			if(sta->asoc_cap.num_ampdu_bk != 0){
+				sta->asoc_cap.num_ampdu = sta->asoc_cap.num_ampdu_bk;
+				sta->asoc_cap.num_ampdu_bk = 0;
+			}
+			if(rtw_hal_cfg_tx_ampdu(phl_info->hal, sta) !=
+			   RTW_HAL_STATUS_SUCCESS)
+				PHL_ERR("%s Thermal protect restore tx ampdu fail\n", __FUNCTION__);
+		}
 	}
-
 }
 
 void phl_thermal_protect_watchdog(struct phl_info_t *phl_info)
 {
 	struct rtw_phl_com_t *phl_com = phl_info->phl_com;
 	bool action_changed = false;
+	u8 min_tx_duty = phl_com->dev_cap.min_tx_duty;
+	u8 next_tx_duty = THERMAL_NO_TX_DUTY_CTRL;
+	u8 duty_interval = 1;
+
+	if (min_tx_duty == THERMAL_NO_TX_DUTY_CTRL)
+		return;
 
 	if(phl_com->drv_mode != RTW_DRV_MODE_NORMAL &&
 	   phl_com->drv_mode != RTW_DRV_MODE_HIGH_THERMAL)
@@ -120,20 +138,18 @@ void phl_thermal_protect_watchdog(struct phl_info_t *phl_info)
 	if(action_changed == false)
 		return;
 
-	switch (phl_com->thermal_protect_action){
-		case PHL_THERMAL_PROTECT_ACTION_NONE:
-			_phl_thermal_protect_disable_all_txop(phl_info, false);
-			_phl_thermal_protect_reduce_ampdu_num(phl_info, 0);
-			break;
-		case PHL_THERMAL_PROTECT_ACTION_LEVEL1:
-			_phl_thermal_protect_disable_all_txop(phl_info, true);
-			_phl_thermal_protect_reduce_ampdu_num(phl_info, 70);
-			break;
-		case PHL_THERMAL_PROTECT_ACTION_LEVEL2:
-			_phl_thermal_protect_reduce_ampdu_num(phl_info, 50);
-			break;
-		default:
-			break;
+	duty_interval = (THERMAL_NO_TX_DUTY_CTRL - min_tx_duty) / PHL_THERMAL_PROTECT_ACTION_LEVEL_MAX;
+	if (duty_interval == 0)
+		duty_interval = 1;
+
+	if (phl_com->thermal_protect_action == PHL_THERMAL_PROTECT_ACTION_NONE) {
+		phl_thermal_protect_stop_tx_duty(phl_info);
+	} else {
+		next_tx_duty = THERMAL_TX_DUTY_CTRL_DURATION - (duty_interval * (u8)phl_com->thermal_protect_action);
+		if (next_tx_duty >= min_tx_duty)
+			phl_thermal_protect_cfg_tx_duty(phl_info,
+							THERMAL_TX_DUTY_CTRL_DURATION,
+							next_tx_duty);
 	}
 }
 

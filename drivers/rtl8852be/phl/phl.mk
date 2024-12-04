@@ -26,6 +26,7 @@ _PHL_FILES := $(phl_path)phl_init.o \
 			$(phl_path)phl_role.o \
 			$(phl_path)phl_sta.o \
 			$(phl_path)phl_mr.o \
+			$(phl_path)phl_mr_coex.o \
 			$(phl_path)phl_sec.o \
 			$(phl_path)phl_chan.o \
 			$(phl_path)phl_sw_cap.o \
@@ -34,12 +35,9 @@ _PHL_FILES := $(phl_path)phl_init.o \
 			$(phl_path)phl_connect.o \
 			$(phl_path)phl_chan_info.o \
 			$(phl_path)phl_wow.o\
+			$(phl_path)phl_tdls.o\
 			$(phl_path)phl_dm.o \
-			$(phl_path)phl_chnlplan.o \
-			$(phl_path)phl_country.o \
-			$(phl_path)phl_chnlplan_6g.o \
 			$(phl_path)phl_regulation.o \
-			$(phl_path)phl_regulation_6g.o \
 			$(phl_path)phl_led.o \
 			$(phl_path)phl_trx_mit.o \
 			$(phl_path)phl_acs.o \
@@ -54,7 +52,12 @@ _PHL_FILES := $(phl_path)phl_init.o \
 			$(phl_path)phl_sound_cmd.o \
 			$(phl_path)phl_p2pps.o \
 			$(phl_path)phl_thermal.o \
-			$(phl_path)phl_txpwr.o
+			$(phl_path)phl_txpwr.o \
+			$(phl_path)phl_ext_tx_pwr_lmt.o \
+			$(phl_path)phl_dfs.o \
+			$(phl_path)phl_scanofld.o \
+			$(phl_path)phl_ie.o \
+			$(phl_path)phl_diagnose.o
 
 ifeq ($(CONFIG_POWER_SAVE), y)
 _PHL_FILES += $(phl_path)phl_ps.o \
@@ -67,9 +70,7 @@ _PHL_FILES += $(phl_path)phl_fsm.o \
 						$(phl_path)phl_cmd_fsm.o \
 						$(phl_path)phl_cmd_job.o \
 						$(phl_path)phl_ser_fsm.o \
-						$(phl_path)phl_btc_fsm.o \
-						$(phl_path)phl_scan_fsm.o \
-						$(phl_path)phl_sound_fsm.o
+						$(phl_path)phl_btc_fsm.o
 endif
 
 _PHL_FILES += $(phl_path)phl_cmd_dispatch_engine.o\
@@ -80,7 +81,7 @@ _PHL_FILES += $(phl_path)phl_cmd_dispatch_engine.o\
 						$(phl_path)phl_cmd_scan.o \
 						$(phl_path)phl_cmd_btc.o \
 						$(phl_path)phl_sound_cmd.o \
-						$(phl_path)phl_watchdog.o
+						$(phl_path)phl_watchdog.o \
 
 ifeq ($(CONFIG_PCI_HCI), y)
 _PHL_FILES += $(phl_path)hci/phl_trx_pcie.o
@@ -94,9 +95,6 @@ endif
 
 ifeq ($(CONFIG_PHL_CUSTOM_FEATURE), y)
 _PHL_FILES += $(phl_path)custom/phl_custom.o
-ifeq ($(CONFIG_PHL_CUSTOM_FEATURE_FB), y)
-_PHL_FILES += $(phl_path)custom/phl_custom_fb.o
-endif
 endif
 
 ifeq ($(CONFIG_PHL_TEST_SUITE), y)
@@ -111,6 +109,7 @@ _PHL_FILES += $(phl_path)test/mp/phl_test_mp_reg.o
 _PHL_FILES += $(phl_path)test/mp/phl_test_mp_efuse.o
 _PHL_FILES += $(phl_path)test/mp/phl_test_mp_txpwr.o
 _PHL_FILES += $(phl_path)test/mp/phl_test_mp_cal.o
+_PHL_FILES += $(phl_path)test/mp/phl_test_mp_watchdog.o
 _PHL_FILES += $(phl_path)test/verify/phl_test_verify.o
 _PHL_FILES += $(phl_path)test/verify/dbcc/phl_test_dbcc.o
 endif

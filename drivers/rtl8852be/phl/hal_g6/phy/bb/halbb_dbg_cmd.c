@@ -1,17 +1,35 @@
-/******************************************************************************
+/*
+ * SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright(c) 2019 Realtek Corporation.
+ * Copyright (c) 2021, Realtek Semiconductor Corp. All rights reserved.
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of version 2 of the GNU General Public License as
- * published by the Free Software Foundation.
+ * Redistribution and use in source and binary forms, with or without modification,
+ * are permitted provided that the following conditions are met:
  *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
- * more details.
+ *   * Redistributions of source code must retain the above copyright notice, this
+ *     list of conditions and the following disclaimer.
  *
- *****************************************************************************/
+ *   * Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *
+ *   * Neither the name of the Realtek nor the names of its contributors may
+ *     be used to endorse or promote products derived from this software without
+ *     specific prior written permission.
+ *
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ * ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+ * OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+ * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
+ * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include "halbb_precomp.h"
 #include "halbb_dbg_cmd_table.h"
 
@@ -205,6 +223,30 @@ void halbb_bb_fd_dbg(struct bb_info *bb, char input[][16], u32 *_used,
 	}
 }
 
+void halbb_lps_ch_info_dbg(struct bb_info *bb, char input[][16], u32 *_used,
+			   char *output, u32 *_out_len)
+{
+	bool ret = false;
+	u8 i = 0;
+
+	halbb_lps_save_ch_info(bb);
+
+	for(i = 0; i < 10; i++) {
+		ret = halbb_lps_info_status_chk(bb);
+		if (ret)
+			break;
+		halbb_delay_ms(bb, 1);
+	}
+
+	if (ret) {
+		BB_DBG_CNSL(*_out_len, *_used, output + *_used, *_out_len - *_used,
+			    "LPS CH info saved\n");
+	} else {
+		BB_DBG_CNSL(*_out_len, *_used, output + *_used, *_out_len - *_used,
+			    "LPS CH info fail\n");
+	}
+}
+
 /*void halbb_fw_trace_en_h2c(struct bb_info *bb, bool enable,
 			   u32 fw_dbg_comp, u32 monitor_mode, u32 macid)
 {
@@ -227,24 +269,29 @@ void halbb_bb_fd_dbg(struct bb_info *bb, char input[][16], u32 *_used,
 	//odm_fill_h2c_cmd(bb, PHYDM_H2C_FW_TRACE_EN, cmd_length, h2c_parameter);
 }*/
 
-void halbb_cmn_msg_setting(struct bb_info *bb, u32 *val, u32 *_used,
+void halbb_cmn_msg_setting(struct bb_info *bb, char input[][16], u32 *_used,
 			   char *output, u32 *_out_len)
 {
-	u32 used = *_used;
-	u32 out_len = *_out_len;
+	u32 val[3] = {0};
 
-	if (val[1] == 1) {
-		bb->cmn_dbg_msg_period = (u8)val[2];
+	if (_os_strcmp(input[2], "period") == 0) {
+		HALBB_SCAN(input[3], DCMD_HEX, &val[0]);
+		bb->cmn_dbg_msg_period = (u8)val[0];
 
 		if (bb->cmn_dbg_msg_period < HALBB_WATCHDOG_PERIOD)
 			bb->cmn_dbg_msg_period = HALBB_WATCHDOG_PERIOD;
 
-		BB_DBG_CNSL(out_len, used, output + used, out_len - used,
-			 "cmn_dbg_msg_period=%d\n", bb->cmn_dbg_msg_period);
+		BB_DBG_CNSL(*_out_len, *_used, output + *_used, *_out_len - *_used,
+			    "[Cmn_Msg] Period=%d\n", bb->cmn_dbg_msg_period);
+	} else if (_os_strcmp(input[2], "comp") == 0) {
+		HALBB_SCAN(input[3], DCMD_HEX, &val[0]);
+		bb->cmn_dbg_msg_component = (u16)val[0];
+		BB_DBG_CNSL(*_out_len, *_used, output + *_used, *_out_len - *_used,
+			    "[Cmn_Msg] Component=0x%x\n", bb->cmn_dbg_msg_component);
+	} else {
+		BB_DBG_CNSL(*_out_len, *_used, output + *_used, *_out_len - *_used,
+			    "Err\n");
 	}
-
-	*_used = used;
-	*_out_len = out_len;
 }
 
 void halbb_trace_dbg(struct bb_info *bb, char input[][16], u32 *_used,
@@ -266,9 +313,20 @@ void halbb_trace_dbg(struct bb_info *bb, char input[][16], u32 *_used,
 
 	BB_DBG_CNSL(out_len, used, output + used, out_len - used,
 		 "\n================================\n");
-	if (val[0] == 100) {
+	if (val[0] == 100 ||
+	    (_os_strcmp(input[1], "-h") == 0)) {
 		BB_DBG_CNSL(out_len, used, output + used, out_len - used,
-			 "[DBG MSG] Component Selection\n");
+			    "{dbg_comp:0~31} {1:en, 2,dis}\n");
+		BB_DBG_CNSL(out_len, used, output + used, out_len - used,
+			    "clean\n");
+		BB_DBG_CNSL(out_len, used, output + used, out_len - used,
+			    "30 period {sec}\n");
+		BB_DBG_CNSL(out_len, used, output + used, out_len - used,
+			    "30 comp {val}\n");
+		BB_DBG_CNSL(out_len, used, output + used, out_len - used,
+			    "\n");
+		BB_DBG_CNSL(out_len, used, output + used, out_len - used,
+			    "[DBG MSG] Component Selection\n");
 		BB_DBG_CNSL(out_len, used, output + used, out_len - used,
 			 "================================\n");
 		BB_DBG_CNSL(out_len, used, output + used, out_len - used,
@@ -308,8 +366,8 @@ void halbb_trace_dbg(struct bb_info *bb, char input[][16], u32 *_used,
 			 "11. (( %s ))DIG\n",
 			 ((comp & DBG_DIG) ? ("V") : (".")));
 		BB_DBG_CNSL(out_len, used, output + used, out_len - used,
-			 "12. (( %s ))TBD\n",
-			 ((comp & BIT(12)) ? ("V") : (".")));
+			 "12. (( %s ))PATH_DIV\n",
+			 ((comp & DBG_PATH_DIV) ? ("V") : (".")));
 		BB_DBG_CNSL(out_len, used, output + used, out_len - used,
 			 "13. (( %s ))UL_TB_CTRL\n",
 			 ((comp & BIT(13)) ? ("V") : (".")));
@@ -326,10 +384,10 @@ void halbb_trace_dbg(struct bb_info *bb, char input[][16], u32 *_used,
 			 "17. (( %s ))TBD\n",
 			 ((comp & BIT(17)) ? ("V") : (".")));
 		BB_DBG_CNSL(out_len, used, output + used, out_len - used,
-			 "18. (( %s ))TBD\n",
+			 "18. (( %s ))SNIFFER\n",
 			 ((comp & BIT(18)) ? ("V") : (".")));
 		BB_DBG_CNSL(out_len, used, output + used, out_len - used,
-			 "19. (( %s ))TBD\n",
+			 "19. (( %s ))CH_INFO\n",
 			 ((comp & BIT(19)) ? ("V") : (".")));
 		BB_DBG_CNSL(out_len, used, output + used, out_len - used,
 			 "20. (( %s ))PHY_STATUS\n",
@@ -365,12 +423,17 @@ void halbb_trace_dbg(struct bb_info *bb, char input[][16], u32 *_used,
 			 "30. (( %s ))COMMON\n",
 			 ((comp & DBG_CMN) ? ("V") : (".")));
 		BB_DBG_CNSL(out_len, used, output + used, out_len - used,
+			    "    *period {%d sec}\n", bb->cmn_dbg_msg_period);
+		BB_DBG_CNSL(out_len, used, output + used, out_len - used,
+			    "    *comp {0x%x}\n", bb->cmn_dbg_msg_component);
+		BB_DBG_CNSL(out_len, used, output + used, out_len - used,
 			 "31. (( %s ))TBD\n",
 			 ((comp & BIT(31)) ? ("V") : (".")));
 		BB_DBG_CNSL(out_len, used, output + used, out_len - used,
 			 "================================\n");
 
-	} else if (val[0] == 101) {
+	} else if (val[0] == 101 ||
+		(_os_strcmp(input[1], "clean") == 0)) {
 		bb->dbg_component = 0;
 		BB_DBG_CNSL(out_len, used, output + used, out_len - used,
 			 "Disable all debug components\n");
@@ -379,12 +442,13 @@ void halbb_trace_dbg(struct bb_info *bb, char input[][16], u32 *_used,
 			bb->dbg_component |= (one << val[0]);
 		else if (val[1] == 2) /*@disable*/
 			bb->dbg_component &= ~(one << val[0]);
-		else
-			BB_DBG_CNSL(out_len, used, output + used, out_len - used,
-				 "[Warning]  1:on,  2:off\n");
-
-		if (BIT(val[0]) == DBG_CMN) {
-			halbb_cmn_msg_setting(bb, val, &used, output, &out_len);
+		else {
+			if (BIT(val[0]) == DBG_CMN) {
+				halbb_cmn_msg_setting(bb, input, &used, output, &out_len);
+			} else {
+				BB_DBG_CNSL(out_len, used, output + used, out_len - used,
+					 "[Warning]  1:on,  2:off\n");
+			}
 		}
 	}
 	BB_DBG_CNSL(out_len, used, output + used, out_len - used,
@@ -456,10 +520,12 @@ void halbb_scanf(char *in, enum bb_scanf_type type, u32 *out)
 	}
 }
 
-void halbb_cmd_parser(struct bb_info *bb, char input[][MAX_ARGV],
+void halbb_cmd_parser(struct bb_info *bb_0, char input_in[][MAX_ARGV],
 		      u32 input_num, char *output, u32 out_len)
 {
-	struct bb_echo_cmd_info	*echo_cmd = &bb->bb_cmn_hooker->bb_echo_cmd_i;
+	struct bb_info *bb = bb_0;
+	struct bb_echo_cmd_info	*echo_cmd = &bb_0->bb_cmn_hooker->bb_echo_cmd_i;
+	char input[MAX_ARGC][MAX_ARGV];
 	u32 used = 0;
 	u8 id = 0;
 	u32 var1[10] = {0};
@@ -467,7 +533,33 @@ void halbb_cmd_parser(struct bb_info *bb, char input[][MAX_ARGV],
 	u32 halbb_ary_size = echo_cmd->cmd_size;
 	u32 directory = 0;
 	char char_temp = ' ';
-	//u32 val_tmp;
+	enum phl_phy_idx  phy_idx_tmp = HW_PHY_0;
+
+	//BB_TRACE("[IN ] %s %s %s %s %s\n", input_in[0], input_in[1], input_in[2], input_in[3], input_in[4]);
+
+	if (0 == halbb_mem_cmp(bb_0, input_in[0], (void*)"bb", 2)) {
+		phy_idx_tmp = (0 == _os_strcmp((input_in[0] + 2), "1")) ? HW_PHY_1 : HW_PHY_0;
+		BB_TRACE("phy_idx_tmp = %d\n", phy_idx_tmp);
+		halbb_mem_cpy(bb_0, input, &input_in[1], ((MAX_ARGC - 1) * MAX_ARGV));
+	} else if (0 == halbb_mem_cmp(bb_0, input_in[0], (void*)"0", 1)) {
+		phy_idx_tmp = HW_PHY_0;
+		halbb_mem_cpy(bb_0, input, &input_in[1], ((MAX_ARGC - 1) * MAX_ARGV));
+	} else if (0 == halbb_mem_cmp(bb_0, input_in[0], (void*)"1", 1)) {
+		phy_idx_tmp = HW_PHY_1;
+		halbb_mem_cpy(bb_0, input, &input_in[1], ((MAX_ARGC - 1) * MAX_ARGV));
+	} else {
+		halbb_mem_cpy(bb_0, input, &input_in[0], (MAX_ARGC * MAX_ARGV));
+	}
+
+	//BB_TRACE("[OUT] %s %s %s %s %s\n", input[0], input[1], input[2], input[3], input[4]);
+
+	#ifdef HALBB_DBCC_SUPPORT
+	BB_DBG_CNSL(out_len, used, output + used, out_len - used,
+		    "->\n");
+	HALBB_GET_PHY_PTR(bb_0, bb, phy_idx_tmp);
+	BB_DBG_CNSL(out_len, used, output + used, out_len - used,
+		    "[%d] echo phy_idx=%d\n", bb->bb_phy_idx, phy_idx_tmp);
+	#endif
 
 	if (halbb_ary_size == 0)
 		return;
@@ -489,12 +581,6 @@ void halbb_cmd_parser(struct bb_info *bb, char input[][MAX_ARGV],
 			return;
 		}
 	}
-
-	#ifdef HALBB_DBCC_SUPPORT
-	bb = halbb_get_curr_bb_pointer(bb, bb->bb_cmn_hooker->bb_echo_cmd_i.echo_phy_idx);
-	BB_DBG_CNSL(out_len, used, output + used, out_len - used,
-		    "[BB echo cmd] Phy-%d\n", bb->bb_phy_idx);
-	#endif
 
 	switch (id) {
 	case HALBB_HELP: {
@@ -571,11 +657,20 @@ void halbb_cmd_parser(struct bb_info *bb, char input[][MAX_ARGV],
 		halbb_ic_api_dbg(bb, input, &used, output, &out_len);
 		break;
 
+	case HALBB_SPUR_SUPP:
+		halbb_spur_dbg(bb, input, &used, output, &out_len);
+		break;
+
 	case HALBB_PROFILE:
 		halbb_basic_profile_dbg(bb, &used, output, &out_len);
 		break;
 	case HALBB_TX_PW:
-		halbb_pwr_dbg(bb, input, &used, output, &out_len);
+		if (bb->bb_80211spec == BB_AX_IC)
+			halbb_pwr_dbg(bb, input, &used, output, &out_len);
+		#ifdef HALBB_BB_WRAP_SUPPORT
+		else
+			halbb_bb_wrap_dbg_be(bb, input, &used, output, &out_len);
+		#endif
 		break;
 
 	case HALBB_LA_MODE:
@@ -605,15 +700,11 @@ void halbb_cmd_parser(struct bb_info *bb, char input[][MAX_ARGV],
 		halbb_ul_tb_dbg(bb, input, &used, output, &out_len);
 		#endif
 		break;
-
-#if 0
+#ifdef HALBB_AUTO_DBG_SUPPORT
 	case HALBB_AUTO_DBG:
-		#ifdef HALBB_AUTO_DEGBUG
-		halbb_auto_dbg_console(bb, input, &used, output, &out_len);
-		#endif
+		halbb_auto_debug_dbg(bb, input, &used, output, &out_len);
 		break;
 #endif
-
 	case HALBB_DD_DBG:
 		halbb_dd_dump_dbg(bb, input, &used, output, &out_len);
 		break;
@@ -761,16 +852,66 @@ void halbb_cmd_parser(struct bb_info *bb, char input[][MAX_ARGV],
 	case HALBB_RX_GAIN_TABLE:
 		halbb_rx_gain_table_dbg(bb, input, &used, output, &out_len);
 		break;
+	case HALBB_RX_OP1DB_TABLE:
+		halbb_rx_op1db_table_dbg(bb, input, &used, output, &out_len);
+		break;
 	case HALBB_HW_SETTING:
 		halbb_ic_hw_setting_dbg(bb, input, &used, output, &out_len);
 		break;
-	case HALBB_MAC_PHY_INTF:
-		halbb_mac_phy_intf_dbg(bb, input, &used, output, &out_len);
+#ifdef HALBB_PATH_DIV_SUPPORT
+	case HALBB_PATH_DIV:
+		halbb_pathdiv_dbg(bb, input, &used, output, &out_len);
+		break;
+#endif
+
+	case HALBB_DTP:
+		halbb_pwr_ctrl_dbg(bb, input, &used, output, &out_len);
+		break;
+	case HALBB_TX_INFO:
+		halbb_basic_dbg_msg_tx_dbg_reg_cnsl(bb, &used, output, &out_len);
+		break;
+#ifdef HALBB_DYN_1R_CCA_SUPPORT
+	case HALBB_DYN_1R_CCA:
+		halbb_dyn_1r_cca_dbg(bb, input, &used, output, &out_len);
+		break;
+#endif
+#ifdef	HALBB_CNSL_CMN_INFO_SUPPORT
+	case HALBB_CMN_INFO:
+		halbb_basic_dbg_message_cnsl_dbg(bb, input, &used, output, &out_len);
+		break;
+#endif
+#ifdef HALBB_SNIF_SUPPORT
+	case HALBB_SNIFFER_MODE:
+		halbb_snif_dbg(bb, input, &used, output, &out_len);
+		break;
+#endif
+#ifdef HALBB_DYN_DTR_SUPPORT
+	case HALBB_DTR_DBG:
+		halbb_dyn_dtr_dbg(bb, input, &used, output, &out_len);
+		break;
+#endif
+#ifdef HALBB_FW_OFLD_SUPPORT
+	case HALBB_FW_OFLD:
+		halbb_fw_ofld_dbg(bb, input, &used, output, &out_len);
+		break;
+#endif
+
+	case HALBB_MATH:
+		halbb_math_dbg(bb, input, &used, output, &out_len);
+		break;
+	case HALBB_LPS_CH_INFO:
+		halbb_lps_ch_info_dbg(bb, input, &used, output, &out_len);
 		break;
 	default:
 		BB_DBG_CNSL(out_len, used, output + used, out_len - used,
 			 "Do not support this command\n");
 		break;
+#ifdef HALBB_SR_SUPPORT
+	case HALBB_SPATIAL_REUSE:
+		halbb_spatial_reuse_dbg(bb, input, &used, output, &out_len);
+		break;
+#endif
+
 	}
 
 	//BB_DBG_CNSL(out_len, used, output + used, out_len - used,
@@ -790,7 +931,7 @@ s32 halbb_cmd(struct bb_info *bb, char *input, char *output, u32 out_len)
 {
 	char *token;
 	u32 argc = 0;
-	char argv[MAX_ARGC][MAX_ARGV];
+	char argv[MAX_ARGC][MAX_ARGV] = {0};
 
 	do {
 		token = _os_strsep(&input, ", ");
@@ -815,17 +956,19 @@ void halbb_fwdbg_trace(struct bb_info *bb, u32 dbg_comp, u8 fw_trace_en)
 	u32 *bb_h2c = (u32 *) bb_fwdbg;
 	u8 cmdlen = sizeof(struct bb_fw_dbg_cmn_info);
 	bool ret_val = false;
+	#if 0
 	u8 ret_v0, ret_v1, ret_v2;
-	
+
 	/* Set fwdbg api, mac api need driver package*/
 	ret_v0 = rtw_hal_fw_log_cfg(bb->hal_com, FL_CFG_OP_SET, FL_CFG_TYPE_LEVEL, FL_LV_LOUD);
 	ret_v1 = rtw_hal_fw_log_cfg(bb->hal_com, FL_CFG_OP_SET, FL_CFG_TYPE_OUTPUT, FL_OP_C2H);
 	ret_v2 = rtw_hal_fw_log_cfg(bb->hal_com, FL_CFG_OP_SET, FL_CFG_TYPE_COMP, FL_COMP_BB);
+	#endif
 	/* Set fwbb debug component */
-	bb_fwdbg->fw_dbg_comp[0] = (u8) (dbg_comp&0x000000ff);
-	bb_fwdbg->fw_dbg_comp[1] = (u8) (dbg_comp&0x0000ff00);
-	bb_fwdbg->fw_dbg_comp[2] = (u8) (dbg_comp&0x00ff0000);
-	bb_fwdbg->fw_dbg_comp[3] = (u8) (dbg_comp&0xff000000);
+	bb_fwdbg->fw_dbg_comp[0] = (u8)(dbg_comp & 0x000000ff);
+	bb_fwdbg->fw_dbg_comp[1] = (u8)(dbg_comp & 0x0000ff00);
+	bb_fwdbg->fw_dbg_comp[2] = (u8)(dbg_comp & 0x00ff0000);
+	bb_fwdbg->fw_dbg_comp[3] = (u8)(dbg_comp & 0xff000000);
 	bb_fwdbg->fw_dbg_trace = fw_trace_en;
 	BB_DBG(bb, DBG_FW_INFO, "FW TRACE: %x %x\n", bb_h2c[0], bb_h2c[1]);
 	ret_val = halbb_fill_h2c_cmd(bb, cmdlen, DM_H2C_FWTRACE, HALBB_H2C_DM, bb_h2c);
@@ -842,7 +985,7 @@ void halbb_fw_dbg(struct bb_info *bb, char input[][16], u32 *_used,
 
 	if (_os_strcmp(input[1], help) == 0) {
 		BB_DBG_CNSL(out_len, used, output + used, out_len - used,
-			 "{fw_dbg (dbg_trace=> 1:enable, 2:disable) (dbg_comp)}\n");
+			    "{fw_dbg (dbg_trace=> 1:enable, 2:disable) (dbg_comp)}\n");
 		goto out;
 	}
 	for (i = 0; i < 5; i++) {
@@ -851,19 +994,19 @@ void halbb_fw_dbg(struct bb_info *bb, char input[][16], u32 *_used,
 	}
 	if (val[0] == 1) {
 		BB_DBG_CNSL(out_len, used, output + used, out_len - used,
-			 "[fw_dbg] Enable : dbg_comp = %x\n", val[1]);
+			    "[fw_dbg] Enable : dbg_comp = %x\n", val[1]);
 		halbb_fwdbg_trace(bb, val[1], 1);
 	} else if (val[0] == 2) {
 		BB_DBG_CNSL(out_len, used, output + used, out_len - used,
-			 "[fw_dbg] Disable : dbg_comp clear\n");
+			    "[fw_dbg] Disable : dbg_comp clear\n");
 		halbb_fwdbg_trace(bb, 0, 0);
 	} else if (val[0] == 3) {
 		BB_DBG_CNSL(out_len, used, output + used, out_len - used,
-			 "[fw_dbg] Trigger h2c ==> c2h debug\n");
+			    "[fw_dbg] Trigger h2c ==> c2h debug\n");
 		halbb_test_h2c_c2h_flow(bb);
 	} else if (val[0] == 4) {
 		BB_DBG_CNSL(out_len, used, output + used, out_len - used,
-			 "[fw_dbg] Set h2c get tx statistic\n");
+			    "[fw_dbg] Set h2c get tx statistic\n");
 		rtw_halbb_query_txsts(bb, (u16)val[1], (u16)val[2]);
 	}
 

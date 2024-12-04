@@ -34,14 +34,30 @@ static void _hdl_role_notify(void *phl, struct phl_msg *msg)
 	struct rtw_role_cmd *rcmd = NULL;
 	struct rtw_wifi_role_t *wrole = NULL;
 	struct rtw_phl_stainfo_t *sta = NULL;
+	struct rtw_wifi_role_link_t *rlink = NULL;
+	u8 idx = 0;
 
 	if (msg->inbuf && (msg->inlen == sizeof(struct rtw_role_cmd))) {
 		rcmd  = (struct rtw_role_cmd *)msg->inbuf;
 		wrole = rcmd->wrole;
-		sta = rtw_phl_get_stainfo_self(phl_info, wrole);
+		/* we only handle PHL_LINK_UP_NOA in _hdl_role_notify
+		     and handle the others in FG modules
+		  */
+		if (rcmd->lstate != PHL_LINK_UP_NOA)
+			return;
+		/* Notify all links in a role */
+		for (idx = 0; idx < wrole->rlink_num; idx++) {
+			rlink = get_rlink(wrole, idx);
 
-		rtw_hal_btc_update_role_info_ntfy(phl_info->hal,
-			rcmd->wrole->id, wrole, sta, rcmd->rstate);
+			sta = rtw_phl_get_stainfo_self(phl_info, rlink);
+
+			rtw_hal_btc_update_role_info_ntfy(phl_info->hal,
+			                                  rcmd->wrole->id,
+			                                  wrole,
+			                                  rlink,
+			                                  sta,
+			                                  rcmd->lstate);
+		}
 	} else {
 		PHL_ERR("%s: invalid msg, buf = %p, len = %d\n",
 			__func__, msg->inbuf, msg->inlen);
@@ -51,19 +67,21 @@ static void _hdl_role_notify(void *phl, struct phl_msg *msg)
 static void _hdl_pkt_evt_notify(void *phl, struct phl_msg *msg)
 {
 	struct phl_info_t *phl_info = (struct phl_info_t *)phl;
-	struct rtw_pkt_evt_ntfy *pkt_evt = NULL;
-	struct rtw_wifi_role_t *wrole = NULL;
+	enum phl_pkt_evt_type *pkt_evt_type = NULL;
+	u8 *cmd = NULL;
+	u32 cmd_len = 0;
+	enum rtw_phl_status pstatus = RTW_PHL_STATUS_SUCCESS;
 
-	if (msg->inbuf && (msg->inlen == sizeof(struct rtw_pkt_evt_ntfy))) {
-		pkt_evt = (struct rtw_pkt_evt_ntfy *)msg->inbuf;
-		wrole = pkt_evt->wrole; /* not used currently */
-
-		rtw_hal_btc_packet_event_ntfy(phl_info->hal,
-					(u8)pkt_evt->type);
-	} else {
-		PHL_ERR("%s: invalid msg, buf = %p, len = %d\n",
-			__func__, msg->inbuf, msg->inlen);
+	pstatus = phl_cmd_get_cur_cmdinfo(phl_info, msg->band_idx,
+					msg, &cmd, &cmd_len);
+	if (pstatus != RTW_PHL_STATUS_SUCCESS) {
+		PHL_ERR("%s: get cmd info fail, status = %d\n",
+			__func__, pstatus);
+		return;
 	}
+
+	pkt_evt_type = (enum phl_pkt_evt_type *)cmd;
+	rtw_hal_btc_packet_event_ntfy(phl_info->hal, *pkt_evt_type);
 }
 
 static enum phl_mdl_ret_code _btc_cmd_init(void *phl, void *dispr,
@@ -83,8 +101,10 @@ static void _btc_cmd_deinit(void *dispr, void *priv)
 static enum phl_mdl_ret_code _btc_cmd_start(void *dispr, void *priv)
 {
 	enum phl_mdl_ret_code ret = MDL_RET_SUCCESS;
+	struct phl_info_t *phl = (struct phl_info_t *)priv;
 
 	PHL_INFO("[BTCCMD], %s(): \n", __func__);
+	rtw_hal_btc_bk_mdl_start_ntfy(phl->hal);
 
 	return ret;
 }
@@ -112,12 +132,6 @@ _btc_internal_pre_msg_hdlr(struct phl_info_t *phl_info,
 	switch(evt_id) {
 	case MSG_EVT_BTC_REQ_BT_SLOT:
 		PHL_INFO("[BTCCMD], MSG_EVT_BTC_REQ_BT_SLOT \n");
-		ret = MDL_RET_SUCCESS;
-		break;
-
-	case MSG_EVT_BTC_PKT_EVT_NTFY:
-		PHL_INFO("[BTCCMD], MSG_EVT_BTC_PKT_EVT_NTFY \n");
-		_hdl_pkt_evt_notify(phl_info, msg);
 		ret = MDL_RET_SUCCESS;
 		break;
 
@@ -172,6 +186,471 @@ _btc_internal_msg_hdlr(struct phl_info_t *phl_info,
 }
 
 static enum phl_mdl_ret_code
+_btc_pre_handle_connect_start(struct phl_info_t *phl, struct phl_msg *msg)
+{
+	enum phl_mdl_ret_code ret = MDL_RET_FAIL;
+	struct rtw_wifi_role_t *role = NULL;
+	struct rtw_wifi_role_link_t *rlink = NULL;
+	struct rtw_phl_stainfo_t *sta = NULL;
+	u8 idx = 0;
+
+	if (MSG_MDL_ID_FIELD(msg->msg_id) != PHL_FG_MDL_CONNECT) {
+		ret = MDL_RET_IGNORE;
+		goto _exit;
+	}
+	role = (struct rtw_wifi_role_t *)msg->inbuf;
+	PHL_TRACE(COMP_PHL_MR_COEX, _PHL_INFO_, "%s: Msg_band(%d), Rid(%d)\n",
+		__FUNCTION__, msg->band_idx, role->id);
+	for (idx = 0; idx < role->rlink_num; idx++) {
+		rlink = get_rlink(role, idx);
+		sta = rtw_phl_get_stainfo_self(phl, rlink);
+		rtw_hal_btc_update_role_info_ntfy(phl->hal, role->id, role, rlink,
+						sta, PHL_EN_LINK_START);
+	}
+#ifdef CONFIG_DBCC_SUPPORT
+	/* Be going to enable DBCC */
+	/* Disable mechanism right now */
+	if (phl_mr_is_trigger_dbcc(phl)) {
+		rtw_hal_btc_update_role_info_ntfy(phl->hal, role->id, role, rlink,
+						sta, PHL_EN_DBCC_START);
+	}
+#endif /* CONFIG_DBCC_SUPPORT */
+	ret = MDL_RET_SUCCESS;
+_exit:
+	return ret;
+}
+
+static enum phl_mdl_ret_code
+_btc_pre_handle_disconnect_prepare(struct phl_info_t *phl,
+					struct phl_msg *msg)
+{
+	enum phl_mdl_ret_code ret = MDL_RET_FAIL;
+	struct rtw_wifi_role_t *role = NULL;
+	struct rtw_wifi_role_link_t *rlink = NULL;
+	struct rtw_phl_stainfo_t *sta = NULL;
+	u8 idx = 0;
+
+	if (MSG_MDL_ID_FIELD(msg->msg_id) != PHL_FG_MDL_DISCONNECT) {
+		ret = MDL_RET_IGNORE;
+		goto _exit;
+	}
+	role = (struct rtw_wifi_role_t *)msg->rsvd[0].ptr;
+	PHL_TRACE(COMP_PHL_MR_COEX, _PHL_INFO_, "%s: Msg_band(%d), Rid(%d)\n",
+		__FUNCTION__, msg->band_idx, role->id);
+	for (idx = 0; idx < role->rlink_num; idx++) {
+		rlink = get_rlink(role, idx);
+		sta = rtw_phl_get_stainfo_self(phl, rlink);
+		rtw_hal_btc_update_role_info_ntfy(phl->hal, role->id, role, rlink,
+						sta, PHL_DIS_LINK_START);
+	}
+	ret = MDL_RET_SUCCESS;
+_exit:
+	return ret;
+}
+
+static enum phl_mdl_ret_code
+_btc_pre_handle_disconnect_end(struct phl_info_t *phl,
+					struct phl_msg *msg)
+{
+	enum phl_mdl_ret_code ret = MDL_RET_FAIL;
+
+	if (MSG_MDL_ID_FIELD(msg->msg_id) != PHL_FG_MDL_DISCONNECT &&
+		MSG_MDL_ID_FIELD(msg->msg_id) != PHL_FG_MDL_CONNECT) {
+		ret = MDL_RET_IGNORE;
+		goto _exit;
+	}
+	PHL_TRACE(COMP_PHL_BTC, _PHL_INFO_, "%s: Msg_band(%d)\n",
+		__FUNCTION__, msg->band_idx);
+#ifdef CONFIG_DBCC_SUPPORT
+	/* Be going to disable DBCC */
+	if (phl_mr_is_trigger_dbcc(phl)) {
+		struct rtw_wifi_role_link_t *rlink = NULL;
+		enum phl_band_idx oth_band = (msg->band_idx == HW_BAND_0)
+						? HW_BAND_1 : HW_BAND_0;
+
+		/* Disable mechanism right now */
+		rlink = phl_mr_get_first_rlink_by_band(phl, oth_band);
+		if (rlink != NULL) {
+			struct rtw_phl_stainfo_t *sta = NULL;
+
+			sta = rtw_phl_get_stainfo_self(phl, rlink);
+			rtw_hal_btc_update_role_info_ntfy(phl->hal,
+						rlink->wrole->id, rlink->wrole,
+						rlink, sta, PHL_DIS_DBCC_START);
+		}
+	}
+#endif /* CONFIG_DBCC_SUPPORT */
+	ret = MDL_RET_SUCCESS;
+_exit:
+	return ret;
+}
+
+static enum phl_mdl_ret_code
+_btc_pre_handle_ap_start_prepare(struct phl_info_t *phl,
+					struct phl_msg *msg)
+{
+	enum phl_mdl_ret_code ret = MDL_RET_FAIL;
+	struct rtw_wifi_role_t *role = NULL;
+	struct rtw_wifi_role_link_t *rlink = NULL;
+	struct phl_module_op_info op_info = {0};
+	struct rtw_phl_stainfo_t *sta = NULL;
+	u8 idx = 0;
+
+	if (MSG_MDL_ID_FIELD(msg->msg_id) != PHL_FG_MDL_AP_START) {
+		ret = MDL_RET_IGNORE;
+		goto _exit;
+	}
+	op_info.op_code = FG_REQ_OP_GET_ROLE;
+	if (phl_disp_eng_query_cur_cmd_info(phl, msg->band_idx, &op_info)
+						!= RTW_PHL_STATUS_SUCCESS) {
+		PHL_TRACE(COMP_PHL_BTC, _PHL_WARNING_, "Query wifi role fail!\n");
+		goto _exit;
+	}
+	role = (struct rtw_wifi_role_t *)op_info.outbuf;
+	PHL_TRACE(COMP_PHL_MR_COEX, _PHL_INFO_, "%s: Msg_band(%d), Rid(%d)\n",
+		__FUNCTION__, msg->band_idx, role->id);
+	for (idx = 0; idx < role->rlink_num; idx++) {
+		rlink = get_rlink(role, idx);
+		sta = rtw_phl_get_stainfo_self(phl, rlink);
+		rtw_hal_btc_update_role_info_ntfy(phl->hal, role->id, role, rlink,
+						sta, PHL_EN_LINK_START);
+	}
+#ifdef CONFIG_DBCC_SUPPORT
+	/* Be going to enable DBCC */
+	/* Disable mechanism right now */
+	if (phl_mr_is_trigger_dbcc(phl)) {
+		rtw_hal_btc_update_role_info_ntfy(phl->hal, role->id, role, rlink,
+						sta, PHL_EN_DBCC_START);
+	}
+#endif /* CONFIG_DBCC_SUPPORT */
+	ret = MDL_RET_SUCCESS;
+_exit:
+	return ret;
+}
+
+static enum phl_mdl_ret_code
+_btc_pre_handle_ap_stop_prepare(struct phl_info_t *phl,
+					struct phl_msg *msg)
+{
+	enum phl_mdl_ret_code ret = MDL_RET_FAIL;
+	struct rtw_wifi_role_t *role = NULL;
+	struct rtw_wifi_role_link_t *rlink = NULL;
+	struct rtw_phl_stainfo_t *sta = NULL;
+	u8 idx = 0;
+
+	if (MSG_MDL_ID_FIELD(msg->msg_id) != PHL_FG_MDL_AP_STOP) {
+		ret = MDL_RET_IGNORE;
+		goto _exit;
+	}
+	role = (struct rtw_wifi_role_t *)msg->rsvd[0].ptr;
+	PHL_TRACE(COMP_PHL_MR_COEX, _PHL_INFO_, "%s: Msg_band(%d), Rid(%d)\n",
+		__FUNCTION__, msg->band_idx, role->id);
+	for (idx = 0; idx < role->rlink_num; idx++) {
+		rlink = get_rlink(role, idx);
+		sta = rtw_phl_get_stainfo_self(phl, rlink);
+		rtw_hal_btc_update_role_info_ntfy(phl->hal, role->id, role, rlink,
+						sta, PHL_DIS_LINK_START);
+	}
+	ret = MDL_RET_SUCCESS;
+_exit:
+	return ret;
+}
+
+static enum phl_mdl_ret_code
+_btc_pre_handle_ap_stop_end(struct phl_info_t *phl,
+					struct phl_msg *msg)
+{
+	enum phl_mdl_ret_code ret = MDL_RET_FAIL;
+
+	if (MSG_MDL_ID_FIELD(msg->msg_id) != PHL_FG_MDL_AP_STOP) {
+		ret = MDL_RET_IGNORE;
+		goto _exit;
+	}
+	PHL_TRACE(COMP_PHL_BTC, _PHL_INFO_, "%s: Msg_band(%d)\n",
+		__FUNCTION__, msg->band_idx);
+#ifdef CONFIG_DBCC_SUPPORT
+	/* Be going to disable DBCC */
+	if (phl_mr_is_trigger_dbcc(phl)) {
+		struct rtw_wifi_role_link_t *rlink = NULL;
+		enum phl_band_idx oth_band = (msg->band_idx == HW_BAND_0)
+						? HW_BAND_1 : HW_BAND_0;
+
+		/* Disable mechanism right now */
+		rlink = phl_mr_get_first_rlink_by_band(phl, oth_band);
+		if (rlink != NULL) {
+			struct rtw_phl_stainfo_t *sta = NULL;
+
+			sta = rtw_phl_get_stainfo_self(phl, rlink);
+			rtw_hal_btc_update_role_info_ntfy(phl->hal,
+						rlink->wrole->id, rlink->wrole,
+						rlink, sta, PHL_DIS_DBCC_START);
+		}
+	}
+#endif /* CONFIG_DBCC_SUPPORT */
+	ret = MDL_RET_SUCCESS;
+_exit:
+	return ret;
+}
+
+static enum phl_mdl_ret_code
+_btc_post_handle_swch_done(struct phl_info_t *phl,
+						struct phl_msg *msg)
+{
+	enum phl_mdl_ret_code ret = MDL_RET_FAIL;
+	struct rtw_wifi_role_link_t *rlink = NULL;
+	struct rtw_phl_stainfo_t *sta = NULL;
+
+	if (MSG_MDL_ID_FIELD(msg->msg_id) != PHL_FG_MDL_CONNECT) {
+		ret = MDL_RET_IGNORE;
+		goto _exit;
+	}
+	rlink = (struct rtw_wifi_role_link_t *)msg->rsvd[0].ptr;
+	PHL_TRACE(COMP_PHL_MR_COEX, _PHL_INFO_, "%s: Msg_band(%d), Rid(%d)\n",
+		__FUNCTION__, msg->band_idx, rlink->wrole->id);
+	sta = rtw_phl_get_stainfo_self(phl, rlink);
+	rtw_hal_btc_update_role_info_ntfy(phl->hal, rlink->wrole->id, rlink->wrole,
+					rlink, sta, PHL_LINK_STARTED);
+	ret = MDL_RET_SUCCESS;
+_exit:
+	return ret;
+}
+
+
+static enum phl_mdl_ret_code
+_btc_post_handle_connect_done(struct phl_info_t *phl,
+					struct phl_msg *msg)
+{
+	enum phl_mdl_ret_code ret = MDL_RET_FAIL;
+	struct rtw_wifi_role_t *role = NULL;
+	struct rtw_wifi_role_link_t *rlink = NULL;
+	struct rtw_phl_stainfo_t *sta = NULL;
+	struct phl_module_op_info op_info = {0};
+	u8 idx = 0;
+
+	if (MSG_MDL_ID_FIELD(msg->msg_id) != PHL_FG_MDL_CONNECT) {
+		ret = MDL_RET_IGNORE;
+		goto _exit;
+	}
+	op_info.op_code = FG_REQ_OP_GET_ROLE;
+	if(phl_disp_eng_query_cur_cmd_info(phl, msg->band_idx, &op_info)
+		!= RTW_PHL_STATUS_SUCCESS){
+		PHL_TRACE(COMP_PHL_MR_COEX, _PHL_WARNING_, "Query wifi role fail!\n");
+		goto _exit;
+	}
+	role = (struct rtw_wifi_role_t *)op_info.outbuf;
+	PHL_TRACE(COMP_PHL_MR_COEX, _PHL_INFO_, "%s: Msg_band(%d), Rid(%d)\n",
+		__FUNCTION__, msg->band_idx, role->id);
+	for (idx = 0; idx < role->rlink_num; idx++) {
+		rlink = get_rlink(role, idx);
+		sta = rtw_phl_get_stainfo_self(phl, rlink);
+		rtw_hal_btc_update_role_info_ntfy(phl->hal, role->id, role, rlink,
+						sta, PHL_EN_LINK_DONE);
+	}
+	ret = MDL_RET_SUCCESS;
+_exit:
+	return ret;
+}
+
+static enum phl_mdl_ret_code
+_btc_post_handle_disconnect_end(struct phl_info_t *phl,
+					struct phl_msg *msg)
+{
+	enum phl_mdl_ret_code ret = MDL_RET_FAIL;
+	struct rtw_wifi_role_t *role = NULL;
+	struct rtw_wifi_role_link_t *rlink = NULL;
+	struct rtw_phl_stainfo_t *sta = NULL;
+	u8 idx = 0;
+
+	if (MSG_MDL_ID_FIELD(msg->msg_id) != PHL_FG_MDL_DISCONNECT &&
+		MSG_MDL_ID_FIELD(msg->msg_id) != PHL_FG_MDL_CONNECT) {
+		ret = MDL_RET_IGNORE;
+		goto _exit;
+	}
+	role = (struct rtw_wifi_role_t *)msg->inbuf;
+	PHL_TRACE(COMP_PHL_MR_COEX, _PHL_INFO_, "%s: Msg_band(%d), Rid(%d)\n",
+		__FUNCTION__, msg->band_idx, role->id);
+	for (idx = 0; idx < role->rlink_num; idx++) {
+		rlink = get_rlink(role, idx);
+		sta = rtw_phl_get_stainfo_self(phl, rlink);
+		rtw_hal_btc_update_role_info_ntfy(phl->hal, role->id, role, rlink,
+						sta, PHL_DIS_LINK_DONE);
+	}
+	ret = MDL_RET_SUCCESS;
+_exit:
+	return ret;
+}
+
+static enum phl_mdl_ret_code
+_btc_post_handle_ap_start_end(struct phl_info_t *phl,
+					struct phl_msg *msg)
+{
+	enum phl_mdl_ret_code ret = MDL_RET_FAIL;
+	struct rtw_wifi_role_t *role = NULL;
+	struct rtw_wifi_role_link_t *rlink = NULL;
+	struct rtw_phl_stainfo_t *sta = NULL;
+	u8 idx = 0;
+
+	if (MSG_MDL_ID_FIELD(msg->msg_id) != PHL_FG_MDL_AP_START) {
+		ret = MDL_RET_IGNORE;
+		goto _exit;
+	}
+	role = (struct rtw_wifi_role_t *)msg->rsvd[0].ptr;
+	PHL_TRACE(COMP_PHL_MR_COEX, _PHL_INFO_, "%s: Msg_band(%d), Rid(%d)\n",
+		__FUNCTION__, msg->band_idx, role->id);
+	for (idx = 0; idx < role->rlink_num; idx++) {
+		rlink = get_rlink(role, idx);
+		sta = rtw_phl_get_stainfo_self(phl, rlink);
+		rtw_hal_btc_update_role_info_ntfy(phl->hal, role->id, role, rlink,
+					sta, PHL_EN_LINK_DONE);
+	}
+	ret = MDL_RET_SUCCESS;
+_exit:
+	return ret;
+}
+
+static enum phl_mdl_ret_code
+_btc_post_handle_ap_stop_end(struct phl_info_t *phl,
+					struct phl_msg *msg)
+{
+	enum phl_mdl_ret_code ret = MDL_RET_FAIL;
+	struct rtw_wifi_role_t *role = NULL;
+	struct rtw_wifi_role_link_t *rlink = NULL;
+	struct rtw_phl_stainfo_t *sta = NULL;
+	u8 idx = 0;
+
+	if (MSG_MDL_ID_FIELD(msg->msg_id) != PHL_FG_MDL_AP_STOP) {
+		ret = MDL_RET_IGNORE;
+		goto _exit;
+	}
+	role = (struct rtw_wifi_role_t *)msg->inbuf;
+	PHL_TRACE(COMP_PHL_MR_COEX, _PHL_INFO_, "%s: Msg_band(%d), Rid(%d)\n",
+		__FUNCTION__, msg->band_idx, role->id);
+	for (idx = 0; idx < role->rlink_num; idx++) {
+		rlink = get_rlink(role, idx);
+		sta = rtw_phl_get_stainfo_self(phl, rlink);
+		rtw_hal_btc_update_role_info_ntfy(phl->hal, role->id, role, rlink,
+					sta, PHL_DIS_LINK_DONE);
+	}
+	ret = MDL_RET_SUCCESS;
+_exit:
+	return ret;
+}
+
+static enum phl_mdl_ret_code
+_btc_post_handle_ecsa_swch_done(struct phl_info_t *phl,
+					struct phl_msg *msg)
+{
+	enum phl_mdl_ret_code ret = MDL_RET_FAIL;
+	struct rtw_wifi_role_t *role = NULL;
+	struct rtw_wifi_role_link_t *rlink = NULL;
+	struct rtw_phl_stainfo_t *sta = NULL;
+
+	if (MSG_MDL_ID_FIELD(msg->msg_id) != PHL_FG_MDL_ECSA ) {
+		ret = MDL_RET_IGNORE;
+		goto _exit;
+	}
+	role = (struct rtw_wifi_role_t *)msg->rsvd[0].ptr;
+	rlink = (struct rtw_wifi_role_link_t *)msg->rsvd[1].ptr;
+	sta = rtw_phl_get_stainfo_self(phl, rlink);
+	PHL_TRACE(COMP_PHL_MR_COEX, _PHL_INFO_, "%s: Msg_band(%d), Rid(%d)\n",
+		__FUNCTION__, msg->band_idx, role->id);
+	rtw_hal_btc_update_role_info_ntfy(phl->hal, role->id, role, rlink,
+						sta, PHL_LINK_CHG_CH);
+	ret = MDL_RET_SUCCESS;
+_exit:
+	return ret;
+}
+
+#ifdef CONFIG_DBCC_SUPPORT
+static enum phl_mdl_ret_code
+_btc_post_handle_dbcc_enable(struct phl_info_t *phl,
+					struct phl_msg *msg)
+{
+	enum phl_mdl_ret_code ret = MDL_RET_FAIL;
+	struct rtw_wifi_role_link_t *rlink = NULL;
+	struct rtw_phl_stainfo_t *sta = NULL;
+
+	if (MSG_MDL_ID_FIELD(msg->msg_id) != PHL_MDL_MRC) {
+		ret = MDL_RET_IGNORE;
+		goto _exit;
+	}
+	PHL_TRACE(COMP_PHL_MR_COEX, _PHL_INFO_, "%s: Msg_band(%d)\n",
+		__FUNCTION__, msg->band_idx);
+	/* resume mechanism for band0 */
+	rlink = phl_mr_get_first_rlink_by_band(phl, HW_BAND_0);
+	if (rlink != NULL) {
+		sta = rtw_phl_get_stainfo_self(phl, rlink);
+		rtw_hal_btc_update_role_info_ntfy(phl->hal, rlink->wrole->id,
+						rlink->wrole, rlink,
+						sta, PHL_EN_DBCC_DONE);
+	}
+	ret = MDL_RET_SUCCESS;
+_exit:
+	return ret;
+}
+
+static enum phl_mdl_ret_code
+_btc_post_handle_dbcc_disable(struct phl_info_t *phl,
+					struct phl_msg *msg)
+{
+	enum phl_mdl_ret_code ret = MDL_RET_FAIL;
+	struct rtw_wifi_role_link_t *rlink = NULL;
+	struct rtw_phl_stainfo_t *sta = NULL;
+
+	if (MSG_MDL_ID_FIELD(msg->msg_id) != PHL_MDL_MRC) {
+		ret = MDL_RET_IGNORE;
+		goto _exit;
+	}
+	PHL_TRACE(COMP_PHL_MR_COEX, _PHL_INFO_, "%s: Msg_band(%d)\n",
+		__FUNCTION__, msg->band_idx);
+	/* resume mechanism for band0 */
+	rlink = phl_mr_get_first_rlink_by_band(phl, HW_BAND_0);
+	if (rlink != NULL) {
+		sta = rtw_phl_get_stainfo_self(phl, rlink);
+		rtw_hal_btc_update_role_info_ntfy(phl->hal, rlink->wrole->id,
+						rlink->wrole, rlink,
+						sta, PHL_DIS_DBCC_DONE);
+	}
+	ret = MDL_RET_SUCCESS;
+_exit:
+	return ret;
+}
+
+#endif /* CONFIG_DBCC_SUPPORT */
+
+static enum phl_mdl_ret_code
+_btc_post_handle_client_ps_annc(struct phl_info_t *phl,
+			struct phl_msg *msg)
+{
+	enum phl_mdl_ret_code ret = MDL_RET_FAIL;
+	struct rtw_phl_stainfo_t *sta = NULL;
+	struct link_ntfy *ntfy = NULL;
+	u8 *cmd = NULL;
+	u32 cmd_len;
+
+	if (MSG_MDL_ID_FIELD(msg->msg_id) != PHL_MDL_GENERAL) {
+		ret = MDL_RET_IGNORE;
+		goto _exit;
+	}
+	if (RTW_PHL_STATUS_SUCCESS != phl_cmd_get_cur_cmdinfo(phl,
+				msg->band_idx, msg, &cmd, &cmd_len)) {
+		PHL_TRACE(COMP_PHL_BTC, _PHL_ERR_, "%s: Fail to get cmd info \n",
+			__FUNCTION__);
+		goto _exit;
+	}
+	ntfy = (struct link_ntfy *)cmd;
+	PHL_TRACE(COMP_PHL_BTC, _PHL_INFO_, "%s: Msg_band(%d), lstate(%d)\n",
+		__FUNCTION__, msg->band_idx, ntfy->lstate);
+	sta = (struct rtw_phl_stainfo_t *)ntfy->rsvd[0].ptr;
+	rtw_hal_btc_update_role_info_ntfy(phl->hal, sta->rlink->wrole->id,
+					sta->rlink->wrole, sta->rlink,
+					sta, ntfy->lstate);
+	ret = MDL_RET_SUCCESS;
+_exit:
+	return ret;
+}
+
+static enum phl_mdl_ret_code
 _btc_external_pre_msg_hdlr(struct phl_info_t *phl_info,
                            void *dispr,
                            struct phl_msg *msg)
@@ -182,35 +661,53 @@ _btc_external_pre_msg_hdlr(struct phl_info_t *phl_info,
 	struct rtw_hal_com_t *hal_com = rtw_hal_get_halcom(phl_info->hal);
 	enum phl_phy_idx phy_idx = HW_PHY_0;
 
-	/*PHL_INFO("[BTCCMD], msg->band_idx = %d,  msg->msg_id = 0x%x\n",
-		msg->band_idx, msg->msg_id);*/
-
 	switch(evt_id) {
-		case MSG_EVT_SCAN_START:
-			if (MSG_MDL_ID_FIELD(msg->msg_id) != PHL_FG_MDL_SCAN)
-				break;
-
-			if (msg->band_idx == HW_BAND_1)
-				phy_idx = HW_PHY_1;
-			PHL_INFO("[BTCCMD], MSG_EVT_SCAN_START \n");
-			band = hal_com->band[msg->band_idx].cur_chandef.band;
-			rtw_hal_btc_scan_start_ntfy(phl_info->hal, phy_idx, band);
-
-			ret = MDL_RET_SUCCESS;
+	case MSG_EVT_SCAN_START:
+		if (MSG_MDL_ID_FIELD(msg->msg_id) != PHL_FG_MDL_SCAN)
 			break;
-
-		case MSG_EVT_CONNECT_START:
-			if (MSG_MDL_ID_FIELD(msg->msg_id) != PHL_FG_MDL_CONNECT)
-				break;
-
-			PHL_INFO("[BTCCMD], MSG_EVT_CONNECT_START \n");
-			ret = MDL_RET_SUCCESS;
-			break;
-
-		default:
-			break;
+		if (msg->band_idx == HW_BAND_1)
+			phy_idx = HW_PHY_1;
+		PHL_INFO("[BTCCMD], MSG_EVT_SCAN_START \n");
+		band = hal_com->band[msg->band_idx].cur_chandef.band;
+		rtw_hal_btc_scan_start_ntfy(phl_info->hal, phy_idx, band);
+		ret = MDL_RET_SUCCESS;
+		break;
+	case MSG_EVT_CONNECT_START:
+		PHL_INFO("[BTCCMD], MSG_EVT_CONNECT_START \n");
+		ret = _btc_pre_handle_connect_start(phl_info, msg);
+		break;
+	case MSG_EVT_DISCONNECT_PREPARE:
+		ret = _btc_pre_handle_disconnect_prepare(phl_info, msg);
+		break;
+	case MSG_EVT_DISCONNECT_END:
+		ret = _btc_pre_handle_disconnect_end(phl_info, msg);
+		break;
+	case MSG_EVT_AP_START_PREPARE:
+		ret = _btc_pre_handle_ap_start_prepare(phl_info, msg);
+		break;
+	case MSG_EVT_AP_STOP_PREPARE:
+		ret = _btc_pre_handle_ap_stop_prepare(phl_info, msg);
+		break;
+	case MSG_EVT_AP_STOP_END:
+		ret = _btc_pre_handle_ap_stop_end(phl_info, msg);
+		break;
+	case MSG_EVT_PKT_EVT_NTFY:
+		PHL_INFO("[BTCCMD], MSG_EVT_PKT_EVT_NTFY \n");
+		_hdl_pkt_evt_notify(phl_info, msg);
+		ret = MDL_RET_SUCCESS;
+		break;
+	default:
+		PHL_TRACE(COMP_PHL_BTC, _PHL_INFO_, "%s: MDL(%d), EVT(%d), Not handle event in pre-phase\n",
+			__FUNCTION__, MSG_MDL_ID_FIELD(msg->msg_id),
+			MSG_EVT_ID_FIELD(msg->msg_id));
+		break;
 	}
-
+	if (ret == MDL_RET_FAIL) {
+		PHL_TRACE(COMP_PHL_DBG, _PHL_ERR_,
+			"%s: MDL(%d), EVT(%d), handle event failed\n",
+			__FUNCTION__, MSG_MDL_ID_FIELD(msg->msg_id),
+			MSG_EVT_ID_FIELD(msg->msg_id));
+	}
 	return ret;
 }
 
@@ -225,50 +722,73 @@ _btc_external_post_msg_hdlr(struct phl_info_t *phl_info,
 	enum phl_phy_idx phy_idx = HW_PHY_0;
 
 	switch(evt_id) {
-		case MSG_EVT_SCAN_END:
-			if (MSG_MDL_ID_FIELD(msg->msg_id) != PHL_FG_MDL_SCAN)
-				break;
-
-			if (msg->band_idx == HW_BAND_1)
-				phy_idx = HW_PHY_1;
-			PHL_DBG("[BTCCMD], MSG_EVT_SCAN_END \n");
-			rtw_hal_btc_scan_finish_ntfy(hal_info, phy_idx);
-			ret = MDL_RET_SUCCESS;
+	case MSG_EVT_SCAN_END:
+		if (MSG_MDL_ID_FIELD(msg->msg_id) != PHL_FG_MDL_SCAN)
 			break;
-
-		case MSG_EVT_CONNECT_END:
-			if (MSG_MDL_ID_FIELD(msg->msg_id) != PHL_FG_MDL_CONNECT)
-				break;
-
-			PHL_DBG("[BTCCMD], MSG_EVT_CONNECT_END \n");
-			ret = MDL_RET_SUCCESS;
+		if (msg->band_idx == HW_BAND_1)
+			phy_idx = HW_PHY_1;
+		PHL_DBG("[BTCCMD], MSG_EVT_SCAN_END \n");
+		rtw_hal_btc_scan_finish_ntfy(hal_info, phy_idx);
+		ret = MDL_RET_SUCCESS;
+		break;
+	case MSG_EVT_SWCH_DONE:
+		ret = _btc_post_handle_swch_done(phl_info, msg);
+		break;
+	case MSG_EVT_CONNECT_END:
+		ret = _btc_post_handle_connect_done(phl_info, msg);
+		break;
+	case MSG_EVT_DISCONNECT_END:
+		ret = _btc_post_handle_disconnect_end(phl_info, msg);
+		break;
+	case MSG_EVT_AP_START_END:
+		ret = _btc_post_handle_ap_start_end(phl_info, msg);
+		break;
+	case MSG_EVT_AP_STOP_END:
+		ret = _btc_post_handle_ap_stop_end(phl_info, msg);
+		break;
+	case MSG_EVT_ECSA_SWITCH_DONE:
+		ret = _btc_post_handle_ecsa_swch_done(phl_info, msg);
+		break;
+#ifdef CONFIG_DBCC_SUPPORT
+	case MSG_EVT_DBCC_ENABLE:
+		ret = _btc_post_handle_dbcc_enable(phl_info, msg);
+		break;
+	case MSG_EVT_DBCC_DISABLE:
+		ret = _btc_post_handle_dbcc_disable(phl_info, msg);
+		break;
+#endif /* CONFIG_DBCC_SUPPORT */
+	case MSG_EVT_ROLE_NTFY:
+		if (MSG_MDL_ID_FIELD(msg->msg_id) != PHL_MDL_MRC)
 			break;
-
-		case MSG_EVT_ROLE_NTFY:
-			if (MSG_MDL_ID_FIELD(msg->msg_id) != PHL_MDL_MRC)
-				break;
-
-			PHL_DBG("[BTCCMD], MSG_EVT_ROLE_NTFY \n");
-			_hdl_role_notify(phl_info, msg);
-			ret = MDL_RET_SUCCESS;
-			break;
-
-		case MSG_EVT_BTC_TMR:
-			PHL_DBG("[BTCCMD], MSG_EVT_BTC_TMR \n");
-			_hdl_tmr(phl_info, msg);
-			ret = MDL_RET_SUCCESS;
-			break;
-
-		case MSG_EVT_BTC_FWEVNT:
-			PHL_DBG("[BTCCMD], MSG_EVT_BTC_FWEVNT \n");
-			rtw_hal_btc_fwinfo_ntfy(phl_info->hal);
-			ret = MDL_RET_SUCCESS;
-			break;
-
-		default:
-			break;
+		PHL_DBG("[BTCCMD], MSG_EVT_ROLE_NTFY \n");
+		_hdl_role_notify(phl_info, msg);
+		ret = MDL_RET_SUCCESS;
+		break;
+	case MSG_EVT_BTC_TMR:
+		PHL_DBG("[BTCCMD], MSG_EVT_BTC_TMR \n");
+		_hdl_tmr(phl_info, msg);
+		ret = MDL_RET_SUCCESS;
+		break;
+	case MSG_EVT_BTC_FWEVNT:
+		PHL_DBG("[BTCCMD], MSG_EVT_BTC_FWEVNT \n");
+		rtw_hal_btc_fwinfo_ntfy(phl_info->hal);
+		ret = MDL_RET_SUCCESS;
+		break;
+	case MSG_EVT_CLIENT_PS_ANNC:
+		ret = _btc_post_handle_client_ps_annc(phl_info, msg);
+		break;
+	default:
+		PHL_TRACE(COMP_PHL_BTC, _PHL_INFO_, "%s: MDL(%d), EVT(%d), Not handle event in post-phase\n",
+			__FUNCTION__, MSG_MDL_ID_FIELD(msg->msg_id),
+			MSG_EVT_ID_FIELD(msg->msg_id));
+		break;
 	}
-
+	if (ret == MDL_RET_FAIL) {
+		PHL_TRACE(COMP_PHL_DBG, _PHL_ERR_,
+			"%s: MDL(%d), EVT(%d), handle event failed\n",
+			__FUNCTION__, MSG_MDL_ID_FIELD(msg->msg_id),
+			MSG_EVT_ID_FIELD(msg->msg_id));
+	}
 	return ret;
 }
 
@@ -352,8 +872,10 @@ static void _btc_set_stbc(struct phl_info_t *phl_info, u8 *buf)
 
 enum rtw_phl_status phl_register_btc_module(struct phl_info_t *phl_info)
 {
-	enum rtw_phl_status phl_status = RTW_PHL_STATUS_FAILURE;
+	enum rtw_phl_status sts = RTW_PHL_STATUS_FAILURE;
+	struct phl_cmd_dispatch_engine *disp_eng = &(phl_info->disp_eng);
 	struct phl_bk_module_ops bk_ops = {0};
+	u8 i = 0;
 
 	PHL_INFO("[BTCCMD], %s(): \n", __func__);
 
@@ -365,27 +887,95 @@ enum rtw_phl_status phl_register_btc_module(struct phl_info_t *phl_info)
 	bk_ops.set_info = _btc_set_info;
 	bk_ops.query_info = _btc_query_info;
 
-	phl_status = phl_disp_eng_register_module(phl_info, HW_BAND_0,
-						PHL_MDL_BTC, &bk_ops);
-	if (RTW_PHL_STATUS_SUCCESS != phl_status) {
-		PHL_ERR("Failed to register BTC module in cmd dispr of hw band 0\n");
+	for (i = 0; i < disp_eng->phy_num; i++) {
+		sts = phl_disp_eng_register_module(phl_info, i, PHL_MDL_BTC,
+						&bk_ops);
+		if (RTW_PHL_STATUS_SUCCESS != sts) {
+			PHL_TRACE(COMP_PHL_DBG, _PHL_ERR_,
+				"%s register PHL_MDL_MR_COEX in cmd disp failed :%d\n",
+				__FUNCTION__, i);
+			break;
+		}
+	}
+	return sts;
+}
+
+static void
+_phl_btc_req_evt_done(void* priv, struct phl_msg* msg)
+{
+	struct phl_info_t *phl_info = (struct phl_info_t *)priv;
+
+	if (msg->inbuf && msg->inlen) {
+		_os_kmem_free(phl_to_drvpriv(phl_info),
+			msg->inbuf, msg->inlen);
+	}
+}
+
+static bool
+_btc_send_hub_msg(struct phl_info_t *phl_info, u8 *buf, u16 evt_id, u32 len)
+{
+	struct phl_msg msg = {0};
+	struct phl_msg_attribute attr = {0};
+	struct rtw_btc_req_msg *btc_req_msg = NULL;
+
+	if (len > BTC_MAX_DATA_SIZE) {
+		PHL_ERR("%s: Buf len exeeds Max.\n", __func__);
+		return false;
 	}
 
-	return phl_status;
+	btc_req_msg = (struct rtw_btc_req_msg *)_os_kmem_alloc(
+			phl_to_drvpriv(phl_info), sizeof(struct rtw_btc_req_msg));
+	if (btc_req_msg == NULL) {
+		PHL_ERR("%s: alloc btc msg fail.\n", __func__);
+		return false;
+	}
+
+	SET_MSG_MDL_ID_FIELD(msg.msg_id, PHL_MDL_BTC);
+	SET_MSG_EVT_ID_FIELD(msg.msg_id,
+		MSG_EVT_BTC_REQ);
+
+	if ((len != 0) && (len <= BTC_MAX_DATA_SIZE))
+		_os_mem_cpy(phl_to_drvpriv(phl_info), btc_req_msg->buf, buf, len);
+	btc_req_msg->len = len;
+	msg.inbuf = (u8 *)btc_req_msg;
+	msg.inlen = sizeof(struct rtw_btc_req_msg);
+	attr.completion.completion = _phl_btc_req_evt_done;
+	attr.completion.priv = phl_info;
+
+	switch (evt_id) {
+	case BTC_HMSG_BT_LINK_CHG:
+		btc_req_msg->type = EVT_BTC_LINK_CHG;
+		break;
+	default:
+		PHL_ERR("%s: Unknown msg !\n", __func__);
+		_os_kmem_free(phl_to_drvpriv(phl_info), btc_req_msg,
+				sizeof(struct rtw_btc_req_msg));
+		return false;
+	}
+
+	if (phl_msg_hub_send(phl_info, &attr, &msg) !=
+				RTW_PHL_STATUS_SUCCESS) {
+		PHL_ERR("%s: [BTC] msg_hub_send failed !\n", __func__);
+		_os_kmem_free(phl_to_drvpriv(phl_info), btc_req_msg,
+				sizeof(struct rtw_btc_req_msg));
+		return false;
+	} else {
+		return true;
+	}
+
 }
 
 bool rtw_phl_btc_send_cmd(struct rtw_phl_com_t *phl_com,
-				u8 *buf, u32 len, u16 ev_id)
+			enum phl_band_idx hw_band, u8 *buf, u32 len, u16 ev_id)
 {
 	struct phl_info_t *phl_info = phl_com->phl_priv;
-	u8 band_idx = HW_BAND_0;
 	struct phl_msg msg = {0};
 	struct phl_msg_attribute attr = {0};
 
 	msg.inbuf = buf;
 	msg.inlen = len;
 	SET_MSG_MDL_ID_FIELD(msg.msg_id, PHL_MDL_BTC);
-	msg.band_idx = band_idx;
+	msg.band_idx = hw_band;
 	switch (ev_id) {
 	case BTC_HMSG_TMR_EN:
 		SET_MSG_EVT_ID_FIELD(msg.msg_id,
@@ -399,11 +989,19 @@ bool rtw_phl_btc_send_cmd(struct rtw_phl_com_t *phl_com,
 		SET_MSG_EVT_ID_FIELD(msg.msg_id,
 			MSG_EVT_BTC_FWEVNT);
 		break;
+	case BTC_HMSG_BT_LINK_CHG:
+		return _btc_send_hub_msg(phl_info, buf, ev_id, len);
 	case BTC_HMSG_SET_BT_REQ_STBC:
 		_btc_set_stbc(phl_info, buf);
 		return true;
 	default:
 		PHL_ERR("%s: Unknown msg !\n", __func__);
+		return false;
+	}
+
+	if (!TEST_STATUS_FLAG(phl_com->dev_state, RTW_DEV_WORKING)) {
+		PHL_ERR("%s: phl_com->dev_state is wrong(%d)\n", __func__,
+				phl_com->dev_state);
 		return false;
 	}
 
@@ -414,84 +1012,6 @@ bool rtw_phl_btc_send_cmd(struct rtw_phl_com_t *phl_com,
 	}
 
 	return true;
-}
-
-static void
-_phl_pkt_evt_ntfy_done(void* priv, struct phl_msg* msg)
-{
-	struct phl_info_t *phl_info = (struct phl_info_t *)priv;
-
-	if(msg->inbuf && msg->inlen){
-		_os_mem_free(phl_to_drvpriv(phl_info),
-			msg->inbuf, msg->inlen);
-	}
-}
-
-void rtw_phl_btc_packet_event_notify(void *phl, u8 role_id, u8 pkt_evt_type)
-{
-	struct phl_info_t *phl_info = (struct phl_info_t *)phl;
-	struct phl_msg msg = {0};
-	struct phl_msg_attribute attr = {0};
-	struct rtw_pkt_evt_ntfy *pkt_evt = NULL;
-
-	pkt_evt = (struct rtw_pkt_evt_ntfy *)_os_mem_alloc(
-		phl_to_drvpriv(phl_info), sizeof(struct rtw_pkt_evt_ntfy));
-	if (pkt_evt == NULL) {
-		PHL_ERR("%s: alloc packet cmd fail.\n", __func__);
-		return;
-	}
-
-	pkt_evt->type = pkt_evt_type;
-
-	msg.inbuf = (u8 *)pkt_evt;
-	msg.inlen = sizeof(struct rtw_pkt_evt_ntfy);
-
-	SET_MSG_MDL_ID_FIELD(msg.msg_id, PHL_MDL_BTC);
-	SET_MSG_EVT_ID_FIELD(msg.msg_id, MSG_EVT_BTC_PKT_EVT_NTFY);
-	msg.band_idx = HW_BAND_0;
-	attr.completion.completion = _phl_pkt_evt_ntfy_done;
-	attr.completion.priv = phl_info;
-
-	if (phl_disp_eng_send_msg(phl_info, &msg, &attr, NULL) !=
-				RTW_PHL_STATUS_SUCCESS) {
-		PHL_ERR("%s: dispr_send_msg failed !\n", __func__);
-		goto cmd_fail;
-	}
-
-	return;
-
-cmd_fail:
-	_os_mem_free(phl_to_drvpriv(phl_info), pkt_evt,
-			sizeof(struct rtw_pkt_evt_ntfy));
-}
-
-u8 rtw_phl_btc_pkt_2_evt_type(u8 packet_type)
-{
-	u8 pkt_evt_type = BTC_PKT_EVT_MAX;
-
-	switch (packet_type) {
-	case PACKET_NORMAL:
-		pkt_evt_type = BTC_PKT_EVT_NORMAL;
-		break;
-	case PACKET_DHCP:
-		pkt_evt_type = BTC_PKT_EVT_DHCP;
-		break;
-	case PACKET_ARP:
-		pkt_evt_type = BTC_PKT_EVT_ARP;
-		break;
-	case PACKET_EAPOL:
-		pkt_evt_type = BTC_PKT_EVT_EAPOL;
-		break;
-	case PACKET_EAPOL_START:
-		pkt_evt_type = BTC_PKT_EVT_EAPOL_START;
-		break;
-	default:
-		PHL_ERR("%s packet type(%d) not support\n",
-			__func__, packet_type);
-		break;
-	}
-
-	return pkt_evt_type;
 }
 #endif /*CONFIG_PHL_CMD_BTC*/
 
@@ -522,6 +1042,20 @@ void rtw_phl_btc_hub_msg_hdl(void *phl, struct phl_msg *msg)
 {
 }
 #endif
+
+#else
+
+enum rtw_phl_status phl_register_btc_module(struct phl_info_t *phl_info)
+{
+	return RTW_PHL_STATUS_SUCCESS;
+}
+
+
+bool rtw_phl_btc_send_cmd(struct rtw_phl_com_t *phl_com,
+			enum phl_band_idx hw_band, u8 *buf, u32 len, u16 ev_id)
+{
+	return 0;
+}
 
 #endif /*CONFIG_BTCOEX*/
 

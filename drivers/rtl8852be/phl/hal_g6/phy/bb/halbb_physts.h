@@ -100,13 +100,17 @@ static const char bb_physts_bitmap_type_t[][9] = {
 	"HT",
 	"VHT",
 	"HE",
+	"EHT",
 };
 
 struct bb_physts_rslt_hdr_info {
+	u8 ppdu_idx;
 	u8 rssi[4];
 	u8 rssi_td[4];
 	u8 rssi_avg;
 	enum bb_physts_bitmap_t ie_map_type;
+	bool bt_rx_during_cca;
+	bool bt_tx_during_cca;
 };
 
 struct bb_physts_rslt_0_info {
@@ -130,8 +134,10 @@ struct bb_physts_rslt_1_info {
 	u8 cn_avg;
 	u8 avg_idle_noise_pwr; /*u(8,1)*/
 	u8 pop_idx;
-	u8 rxsc;
+	u8 rxsc; /*for AX IC*/
+	//u8 rxsb; /*for BE IC*/
 	u8 ch_idx;
+	enum band_type band;
 	u8 rpl_fd; /*u(8,1)*/
 	enum channel_width bw_idx;
 	bool is_su; /*if (not MU && not OFDMA), is_su = 1*/
@@ -208,18 +214,20 @@ struct bb_physts_rslt_8_info {
 	u8 evm_2_sts;
 	u8 avg_idle_noise_pwr;
 	bool is_ch_info_len_valid;
+	s16 *ch_info_addr;
 };
 
 struct bb_physts_rslt_9_info {
 	u8 *ie_09_addr;
 	u32 l_sig;
 	u32 sig_a1;
-	u16 sig_a2;
+	u32 sig_a2;
 };
 
 struct bb_physts_rslt_10_info {
 	u8 *ie_10_addr;
-	u8 tmp;
+	u8 *sigb_raw_data_bits_addr;
+	u16 sigb_len;
 };
 
 struct bb_physts_rslt_11_info {
@@ -538,6 +546,8 @@ struct bb_physts_rslt_24_info {
 	bool l_fine_gain_code_tia_a;
 	bool ht_fine_gain_code_tia_a;
 	bool aci_det;
+	u8 physts_aci_idx;
+
 };
 
 struct bb_physts_rslt_25_info {
@@ -668,17 +678,25 @@ struct bb_physts_cnt_info {
 	u16 err_ie_cnt;
 	u16 ok_ie_cnt;
 	u16 err_len_cnt;
+	u32 invalid_he_cnt;
+	u32 cck_brk_cnt;
+	u32 ie_cnt[PHYSTS_BITMAP_NUM];
+	u32 bt_rx_during_cca_cnt;
+	u32 bt_tx_during_cca_cnt;
+	u32 bt_polluted_bcn_cnt;
 };
 
 struct bb_physts_cr_info {
 	u32 bitmap_search_fail;
 	//u32 bitmap_search_fail_m;
+	u32 bitmap_eht;
 	u32 plcp_hist;
 	u32 plcp_hist_m;
 	u32 period_cnt_en;
 };
 
 struct bb_physts_info {
+	bool init_physts_cr_success;
 	u32 physts_bitmap_recv;
 	u32 bitmap_type[PHYSTS_BITMAP_NUM];
 	u8 rx_path_en;
@@ -687,15 +705,23 @@ struct bb_physts_info {
 	u16 physts_dump_idx;
 	bool is_valid; // used for UI parsing
 	bool show_phy_sts_all_pkt;
+	bool dfs_phy_sts_privilege;// used for CAC period in DFS channel
 	u16 show_phy_sts_cnt;
 	u16 show_phy_sts_max_cnt;
 	// long term cfo rslt
 	s32 l_ltf_cfo_i;
 	s32 l_ltf_cfo_q;
 	u16 ie_len_curr[IE_PHYSTS_LEN_ALL];
+	u16 physts_rpt_len_byte[PHYSTS_BITMAP_NUM]; /*valid physts rpt len report by drv*/
 	bool rssi_cvrt_2_rpl_en;
 	u8 rpl_path[4]; /*u(8,1)*/
 	u8 rpl_avg; /*u(8,1)*/
+	u8 frc_mu; /*force data type to SU/MU(debug mode)*/
+	u8 tmp_mcs;/*fake MCS (debug mode)*/
+	u8 tmp_sts;/*fake STS (debug mode)*/
+	bool invalid_he_occur;
+	bool bypass_bt_rx_during_cca;
+	bool bypass_bt_tx_during_cca;
 	struct bb_rate_info		bb_rate_i;
 	struct bb_rate_info		bb_rate_mu_i;
 	struct bb_physts_cr_info	bb_physts_cr_i;
@@ -735,16 +761,34 @@ struct bb_physts_info {
 	struct bb_physts_rslt_31_info	bb_physts_rslt_31_i;
 };
 
+struct bb_info;
+/*@--------------------------[Prptotype]-------------------------------------*/
+void halbb_mod_rssi_by_path_en(struct bb_info *bb, u8 rx_path_en);
+u8 halbb_physts_fd_snr_cvrt(struct bb_info *bb, u8 path);
+void halbb_physts_fd_rpl_2_rssi_cvrt(struct bb_info *bb);
+void halbb_ch_idx_encode(struct bb_info *bb, u8 ch_idx, enum band_type band,
+			 u8 *ch_idx_encoded);
+void halbb_physts_cvrt_2_mp(struct bb_info *bb);
+void halbb_physts_rpt_gen(struct bb_info *bb, u32 physts_bitmap,
+			  struct physts_result *rpt,
+			  bool physts_rpt_valid, struct physts_rxd *desc,
+			  bool is_cck_rate, bool is_ie8_valid);
 void halbb_physts_ie_bitmap_set(struct bb_info *bb, u32 ie_page, u32 bitmap);
 u32 halbb_physts_ie_bitmap_get(struct bb_info *bb, u32 ie_page);
 void halbb_physts_ie_bitmap_en(struct bb_info *bb, enum bb_physts_bitmap_t type,
 			       enum bb_physts_ie_t ie, bool en);
 void halbb_phy_sts_manual_trig(struct bb_info *bb, enum bb_mode_type mode, u8 ss);
+void halbb_physts_cnt_reset(struct bb_info *bb);
 void halbb_physts_watchdog(struct bb_info *bb);
+void halbb_physts_parsing_init_io_en(struct bb_info *bb);
 void halbb_physts_parsing_init(struct bb_info *bb);
+
+void halbb_physts_brk_fail_rpt_en(struct bb_info* bb, bool enable, enum phl_phy_idx phy_idx);
 
 void halbb_physts_dbg(struct bb_info *bb, char input[][16], u32 *_used,
 		  char *output, u32 *_out_len);
 void halbb_cr_cfg_physts_init(struct bb_info *bb);
-
+bool halbb_physts_bt_polluted(struct bb_info *bb, struct physts_rxd *desc,
+			      bool is_pkt_with_data, bool bt_rx_during_cca,
+			      bool bt_tx_during_cca);
 #endif

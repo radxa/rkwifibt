@@ -29,6 +29,10 @@
 #define DEFAULT_HIT_MACID 0x0
 
 #define ADDR_CAM_SERCH_RANGE  0x7f
+
+#define CCTRL_INFO_ADDR_CAM_IDX_SH 0
+#define CCTRL_INFO_ADDR_CAM_IDX_MSK 0xFF
+
 /**
  * @addtogroup Basic_TRX
  * @{
@@ -326,5 +330,20 @@ u8 get_addr_cam_size(struct mac_ax_adapter *adapter);
  * @}
  * @}
  */
+
+struct mac_ax_mc_table *
+get_avalible_mc_entry(struct mac_ax_adapter *adapter,
+		      struct mac_ax_multicast_info *info);
+
+struct mac_ax_mc_table *
+get_record_mc_entry(struct mac_ax_adapter *adapter,
+		    struct mac_ax_multicast_info *info);
+
+u8 get_avalible_mc_entry_macid(struct mac_ax_adapter *adapter);
+
+u32 mac_pre_proc_mc_info(struct mac_ax_multicast_info *info);
+
+u32 mac_cfg_multicast(struct mac_ax_adapter *adapter, u8 add,
+		      struct mac_ax_multicast_info *info);
 
 #endif

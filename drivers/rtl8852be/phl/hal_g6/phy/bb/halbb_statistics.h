@@ -25,12 +25,16 @@
 #ifndef __HALBB_STATISTICS_H__
 #define __HALBB_STATISTICS_H__
 
+#include "halbb_statistics_ex.h"
+
 /*@--------------------------[Define] ---------------------------------------*/
 #define CHK_HANG_L_SIG_TH             3
 #define HANG_RECOVERY		      true // Disable auto-recovery mechanism for 52A CBV
 #define HANG_LIMIT		      1
 
 /*@--------------------------[Enum]------------------------------------------*/
+#if 0
+
 enum stat_type_sel {
 	STATE_PROBE_RESP	= 1,
 	STATE_BEACON		= 2,
@@ -67,6 +71,7 @@ struct bb_usr_set_info {
 	u16		ht2_rate_idx;
 	u16		vht2_rate_idx;
 	u16		he2_rate_idx;
+	u16		eht2_rate_idx;
 	enum stat_mac_type stat_mac_type_i;
 	enum stat_type_sel stat_type_sel_i;
 };
@@ -95,6 +100,8 @@ struct bb_crc_info {
 	u32		cnt_vht_crc32_ok;
 	u32		cnt_he_crc32_ok;
 	u32		cnt_he_crc32_error;
+	u32		cnt_eht_crc32_ok;
+	u32		cnt_eht_crc32_error;
 	u32		cnt_crc32_error_all;
 	u32		cnt_crc32_ok_all;
 };
@@ -112,6 +119,9 @@ struct bb_crc2_info {
 	u32		cnt_he2_crc32_error;
 	u32		cnt_he2_crc32_ok;
 	u8		he2_pcr;
+	u32		cnt_eht2_crc32_ok;
+	u32		cnt_eht2_crc32_error;
+	u8		eht2_pcr;
 	u32		cnt_ofdm3_crc32_error;
 	u32		cnt_ofdm3_crc32_ok;
 };
@@ -172,6 +182,7 @@ struct bb_tx_cnt_info {
 	u32		ofdm_mac_txen;
 	u32		ofdm_phy_txon;
 };
+#endif
 
 struct bb_stat_cr_info {
 	u32 cck_cca;	    
@@ -244,6 +255,10 @@ struct bb_stat_cr_info {
 	u32 en_tb_ppdu_fix_gain_m;
 	u32 en_tb_cca_pw_th;
 	u32 en_tb_cca_pw_th_m;
+	u32 eht_crc_ok;
+	u32 eht_crc_ok_m;
+	u32 eht_crc_err;
+	u32 eht_crc_err_m;
 	u32 he_crc_ok;
 	u32 he_crc_ok_m;
 	u32 he_crc_err;
@@ -260,6 +275,10 @@ struct bb_stat_cr_info {
 	u32 l_crc_ok_m;
 	u32 l_crc_err;
 	u32 l_crc_err_m;
+	u32 eht_crc_ok2;
+	u32 eht_crc_ok2_m;
+	u32 eht_crc_err2;
+	u32 eht_crc_err2_m;
 	u32 he_crc_ok2;
 	u32 he_crc_ok2_m;
 	u32 he_crc_err2;
@@ -326,10 +345,14 @@ struct bb_stat_cr_info {
 	u32 intf_r_vht_mcs_m;
 	u32 intf_r_he_mcs;
 	u32 intf_r_he_mcs_m;
+	u32 intf_r_eht_mcs;
+	u32 intf_r_eht_mcs_m;
 	u32 intf_r_vht_nss;
 	u32 intf_r_vht_nss_m;
 	u32 intf_r_he_nss;
 	u32 intf_r_he_nss_m;
+	u32 intf_r_eht_nss;
+	u32 intf_r_eht_nss_m;
 	u32 intf_r_mac_hdr_type;
 	u32 intf_r_mac_hdr_type_m;
 	u32 intf_r_pkt_type;
@@ -342,6 +365,8 @@ struct bb_stat_cr_info {
 	u32 cnt_pop_trig_m;
 	u32 max_cnt_pop;
 	u32 max_cnt_pop_m;
+	u32 break_option;
+	u32 break_option_m;
 };
 
 struct bb_stat_info {
@@ -352,7 +377,8 @@ struct bb_stat_info {
 	u32		dbg_port0;
 	u32		chk_hang_cnt;
 	u8		chk_hang_limit;
-	bool	hang_recovery_en;
+	bool		hang_recovery_en;
+	bool		cnt_reset_en;
 	bool		cck_block_enable;
 	bool		ofdm_block_enable;
 	struct bb_tx_cnt_info		bb_tx_cnt_i;
@@ -361,6 +387,7 @@ struct bb_stat_info {
 	struct bb_crc2_info		bb_crc2_i;
 	struct bb_fa_info		bb_fa_i;
 	struct bb_usr_set_info		bb_usr_set_i;
+	struct bb_stat_hang_info bb_stat_hang_i;
 };
 
 struct bb_info;
@@ -381,5 +408,7 @@ void halbb_statistics_reset(struct bb_info *bb);
 void halbb_statistics(struct bb_info *bb);
 void halbb_statistics_init(struct bb_info *bb);
 void halbb_cr_cfg_stat_init(struct bb_info *bb);
+void halbb_pmac_statistics_io_en(struct bb_info *bb);
+void halbb_pmac_statistics(struct bb_info *bb);
 #endif
 

@@ -31,7 +31,7 @@ u8 halrf_get_thermal_8852b(struct rf_info *rf, enum rf_path rf_path)
 	halrf_wrf(rf, rf_path, 0x42, BIT(19), 0x0);
 	halrf_wrf(rf, rf_path, 0x42, BIT(19), 0x1);
 
-	halrf_delay_10us(rf, 20);
+	halrf_delay_us(rf, 200);
 
 	return (u8)halrf_rrf(rf, rf_path, 0x42, 0x0007e);
 }
@@ -72,6 +72,43 @@ u32 halrf_mac_set_pwr_reg_8852b(struct rf_info *rf, enum phl_phy_idx phy,
 			addr, mask, val);
 
 	return result;
+}
+
+void halrf_wlan_tx_power_control_8852b(struct rf_info *rf,
+	enum phl_phy_idx phy, enum phl_pwr_ctrl pwr_ctrl_idx,
+	u32 tx_power_val, bool enable)
+{
+	u32 phy_tmp;
+
+	RF_DBG(rf, DBG_RF_POWER, "[Pwr Ctrl] ==>%s phy=%d pwr_ctrl_idx=%d tx_power_val=%d enable=%d\n",
+		__func__, phy, pwr_ctrl_idx, tx_power_val, enable);
+
+	if (rf->hal_com->dbcc_en)
+		phy_tmp = phy;
+	else
+		phy_tmp = HW_PHY_0;
+
+	if (enable == false) {
+		if (pwr_ctrl_idx == ALL_TIME_CTRL) {
+			/*all-time control Disable*/
+			halrf_mac_set_pwr_reg_8852b(rf, phy_tmp, 0xd200, 0x3ff, 0x0);
+		} else if (pwr_ctrl_idx == GNT_TIME_CTRL) {
+			/*GNT_BT control Disable*/
+			halrf_mac_set_pwr_reg_8852b(rf, phy_tmp, 0xd220, BIT(1), 0x0);
+			halrf_mac_set_pwr_reg_8852b(rf, phy_tmp, 0xd220, 0xff8, 0x0);
+		}
+	} else {
+		if (pwr_ctrl_idx == ALL_TIME_CTRL) {
+			halrf_mac_set_pwr_reg_8852b(rf, phy_tmp, 0xd200, 0x3ff,
+				((tx_power_val & 0x1ff) | BIT(9)));
+		} else if (pwr_ctrl_idx == GNT_TIME_CTRL) {
+			halrf_mac_set_pwr_reg_8852b(rf, phy_tmp, 0xd220, BIT(1), 0x1);
+			halrf_mac_set_pwr_reg_8852b(rf, phy_tmp, 0xd220, 0xff8, tx_power_val & 0x1ff);
+		} else {
+			RF_WARNING("[Pwr Ctrl] ==>%s (pwr_ctrl_idx = %d) don't exist !!!\n",
+				__func__, pwr_ctrl_idx);
+		}
+	}
 }
 
 bool halrf_wl_tx_power_control_8852b(struct rf_info *rf, u32 tx_power_val)
@@ -205,18 +242,24 @@ bool halrf_wl_tx_power_control_8852b(struct rf_info *rf, u32 tx_power_val)
 s8 halrf_get_ther_protected_threshold_8852b(struct rf_info *rf)
 {
 	u8 tmp_a, tmp_b, tmp;
+	u8 therml_max = 0x32;
 
 	tmp_a = halrf_get_thermal(rf, RF_PATH_A);
 	tmp_b = halrf_get_thermal(rf, RF_PATH_B);
+
+#ifdef HALRF_THERMAL_PROTECT_SUPPORT
+	if (rf->phl_com->dev_sw_cap.thermal_threshold != 0xff)
+		therml_max = rf->phl_com->dev_sw_cap.thermal_threshold;
+#endif
 
 	if (tmp_a > tmp_b)
 		tmp = tmp_a;
 	else
 		tmp = tmp_b;
 
-	if (tmp > 0x32)
+	if (tmp > therml_max)
 		return -1;	/*Tx duty reduce*/
-	else if (tmp < 0x31)
+	else if (tmp < therml_max - 2)
 		return 1;	/*Tx duty up*/
 	else 
 		return 0;	/*Tx duty the same*/
@@ -248,24 +291,24 @@ s8 halrf_xtal_tracking_offset_8852b(struct rf_info *rf,
 	if (tmp_a > tmp_b) {
 		if (tmp_a > thermal_a) {
 			tmp = tmp_a - thermal_a;
-			if (tmp > DELTA_SWINGIDX_SIZE)
+			if (tmp >= DELTA_SWINGIDX_SIZE)
 				tmp = DELTA_SWINGIDX_SIZE - 1;
 			xtal_ofst = xtal_trk->delta_swing_xtal_table_idx_p[tmp];
 		} else {
 			tmp = thermal_a - tmp_a;
-			if (tmp > DELTA_SWINGIDX_SIZE)
+			if (tmp >= DELTA_SWINGIDX_SIZE)
 				tmp = DELTA_SWINGIDX_SIZE - 1;
 			xtal_ofst = xtal_trk->delta_swing_xtal_table_idx_n[tmp];
 		}
 	} else {
 		if (tmp_b > thermal_b) {
 			tmp = tmp_b - thermal_b;
-			if (tmp > DELTA_SWINGIDX_SIZE)
+			if (tmp >= DELTA_SWINGIDX_SIZE)
 				tmp = DELTA_SWINGIDX_SIZE - 1;
 			xtal_ofst = xtal_trk->delta_swing_xtal_table_idx_p[tmp];
 		} else {
 			tmp = thermal_b - tmp_b;
-			if (tmp > DELTA_SWINGIDX_SIZE)
+			if (tmp >= DELTA_SWINGIDX_SIZE)
 				tmp = DELTA_SWINGIDX_SIZE - 1;
 			xtal_ofst = xtal_trk->delta_swing_xtal_table_idx_n[tmp];
 		}
@@ -283,4 +326,96 @@ s8 halrf_xtal_tracking_offset_8852b(struct rf_info *rf,
 	return xtal_ofst;
 }
 
+void halrf_rfe_ant_num_chk_8852b(struct rf_info *rf)
+{
+	struct phy_hw_cap_t *phy_hw = rf->hal_com->phy_hw_cap;
+	u8 rfe_type;
+
+	if (phl_is_mp_mode(rf->phl_com))
+		rfe_type = rf->phl_com->dev_sw_cap.rfe_type;
+	else
+		rfe_type = rf->hal_com->dev_hw_cap.rfe_type;
+
+	if (phy_hw[0].tx_num == 1 && phy_hw[0].tx_path_num == 2 &&
+		phy_hw[0].rx_num == 1 && phy_hw[0].rx_path_num == 2) {
+
+		if (rfe_type == 41) {
+			RF_DBG(rf, DBG_RF_INIT, "%s: rfe_type: %d set to 1T1R\n", __func__, rfe_type);
+			phy_hw[0].tx_path_num = 1;
+			phy_hw[0].rx_path_num = 1;
+		} else if (rfe_type == 43) {
+			RF_DBG(rf, DBG_RF_INIT, "%s: rfe_type: %d set to 1T2R\n", __func__, rfe_type);
+			phy_hw[0].tx_path_num = 2;
+			phy_hw[0].rx_path_num = 2;
+		}
+	}
+}
+
+void halrf_txck_force_8852b(struct rf_info *rf, enum rf_path path, bool force, enum dac_ck ck)
+{
+	halrf_wreg(rf, 0x12a0 | (path <<13), BIT(15), 0x0);
+
+	if (!force)
+		return;
+
+	halrf_wreg(rf, 0x12a0 | (path <<13), 0x7000, ck);
+	halrf_wreg(rf, 0x12a0 | (path <<13), BIT(15), 0x1);
+}
+
+
+void halrf_rxck_force_8852b(struct rf_info *rf, enum rf_path path, bool force, enum adc_ck ck)
+{
+
+	halrf_wreg(rf, 0x12a0 | (path <<13), BIT(19), 0x0);
+	if (!force)
+		return;
+	halrf_wreg(rf, 0x12a0 | (path <<13), 0x70000, ck);
+	halrf_wreg(rf, 0x12a0 | (path <<13), BIT(19), 0x1);
+}
+
+
+void halrf_arfc_si_reset_8852b(struct rf_info *rf, bool is_reset)
+{
+	u8 val;
+
+	/*reset adie HW/SW SI*/
+	if (is_reset) {
+		rtw_hal_mac_get_xsi((rf)->hal_com, 0x81, &val);
+		val &= (~0xc0);
+		rtw_hal_mac_set_xsi((rf)->hal_com, 0x81, val);
+
+		rtw_hal_mac_get_xsi((rf)->hal_com, 0x80, &val);
+		val &= (~0xc0);
+		rtw_hal_mac_set_xsi((rf)->hal_com, 0x80, val);
+	} else {
+		rtw_hal_mac_get_xsi((rf)->hal_com, 0x81, &val);
+		val |= 0xc0;
+		rtw_hal_mac_set_xsi((rf)->hal_com, 0x81, val);
+
+		rtw_hal_mac_get_xsi((rf)->hal_com, 0x80, &val);
+		val |= 0xc0;
+		rtw_hal_mac_set_xsi((rf)->hal_com, 0x80, val);
+	}
+}
+
+void halrf_si_reset_8852b(struct rf_info *rf)
+{
+        /*disable hwsi trigger*/
+        halrf_wreg(rf, 0x1200, 0x70000000, 0x7);
+        halrf_wreg(rf, 0x3200, 0x70000000, 0x7);
+        halrf_delay_us(rf, 1);
+        /*reset A die HW SI*/
+        halrf_arfc_si_reset_8852b(rf, true);
+        // reset D die HW SI*/
+        halrf_wreg(rf, 0x12ac, BIT(0), 0x0);
+        halrf_wreg(rf, 0x32ac, BIT(0), 0x0);
+        /*release A die HW SI*/
+        halrf_arfc_si_reset_8852b(rf, false);
+        /*enable hwsi trigger*/
+        halrf_wreg(rf, 0x1200, 0x70000000, 0x0);
+        halrf_wreg(rf, 0x3200, 0x70000000, 0x0);
+        /*release D die HW SI*/   
+        halrf_wreg(rf, 0x12ac, BIT(0), 0x1);
+        halrf_wreg(rf, 0x32ac, BIT(0), 0x1);
+}
 #endif

@@ -134,7 +134,9 @@
 
 enum rtw_hal_status hal_get_efuse_8852be(struct rtw_phl_com_t *phl_com,
 					 struct hal_info_t *hal);
-
+#ifdef CONFIG_PCI_HCI
+enum rtw_hal_status hal_set_pcicfg_8852be(struct hal_info_t *hal_info);
+#endif /* CONFIG_PCI_HCI */
 enum rtw_hal_status hal_init_8852be(struct rtw_phl_com_t *phl_com,
 				    struct hal_info_t *hal);
 
@@ -153,14 +155,18 @@ enum rtw_hal_status hal_wow_deinit_8852be(struct rtw_phl_com_t *phl_com, struct 
 
 enum rtw_hal_status hal_mp_init_8852be(struct rtw_phl_com_t *phl_com, struct hal_info_t *hal);
 enum rtw_hal_status hal_mp_deinit_8852be(struct rtw_phl_com_t *phl_com, struct hal_info_t *hal);
+bool hal_mp_path_chk_8852be(struct rtw_phl_com_t *phl_com, u8 ant_tx, u8 cur_phy);
 
-void hal_init_default_value_8852be(struct hal_info_t *hal, struct hal_intr_mask_cfg *cfg);
+void hal_init_default_value_8852be(struct hal_info_t *hal);
+void hal_init_int_default_value_8852be(struct hal_info_t *hal, enum rtw_hal_int_set_opt opt);
+
 u32 hal_hci_cfg_8852be(struct rtw_phl_com_t *phl_com,
 		       struct hal_info_t *hal,
 				struct rtw_ic_info *ic_info);
 
 void init_hal_spec_8852be(struct rtw_phl_com_t *phl_com,
 					struct hal_info_t *hal);
+void hal_disable_int_isr_8852be(struct hal_info_t *hal);
 void hal_enable_int_8852be(struct hal_info_t *hal);
 void hal_disable_int_8852be(struct hal_info_t *hal);
 bool hal_recognize_int_8852be(struct hal_info_t *hal);
@@ -169,7 +175,14 @@ void hal_clear_int_mask_8852be(struct hal_info_t *hal);
 void hal_restore_int_8852be(struct hal_info_t *hal);
 u32 hal_int_hdler_8852be(struct hal_info_t *hal);
 void hal_rx_int_restore_8852be(struct hal_info_t *hal);
+enum rtw_hal_status
+hal_get_pcicfg_8852be(struct hal_info_t *hal_info,
+		      struct rtw_pcie_cfgspc_param *cfg);
+#ifdef PHL_RXSC_ISR
+enum rtw_hal_status
 
+ hal_rx_rpq_int_check_8852be(u8 dma_ch, u32 hal_int_array);
+#endif
 /* rtl8852BE_ops.c */
 
 #endif /* _RTL8852BE_HAL_H_ */

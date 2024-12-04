@@ -114,60 +114,30 @@ MODULE_PARM_DESC(rtkm_mem_exp, "Preallocated memory expansion");
 #define RTKM_MPOOL_0 0
 #endif
 #ifndef RTKM_MPOOL_1
-#ifdef CONFIG_RTW_REDUCE_MEM
-#define RTKM_MPOOL_1 2*CONFIG_IFACE_NUMBER
-#else
-#define RTKM_MPOOL_1                                                           \
-	(MAX_TX_RING_NUM * CONFIG_IFACE_NUMBER + CONFIG_IFACE_NUMBER +         \
-	 1 /* alloc_txring */)
-#endif
+#define RTKM_MPOOL_1 0
 #endif
 #ifndef RTKM_MPOOL_2
-#ifdef CONFIG_RTW_REDUCE_MEM
-#define RTKM_MPOOL_2 2
-#else
 #define RTKM_MPOOL_2 0
 #endif
-#endif
 #ifndef RTKM_MPOOL_3
-#ifdef CONFIG_RTW_REDUCE_MEM
-#define RTKM_MPOOL_3 2
-#else
-#ifdef CONFIG_PCI_HCI
-#define RTKM_MPOOL_3                                                           \
-	(10 * CONFIG_IFACE_NUMBER /* sta_info */)
-#else
-#define RTKM_MPOOL_3                                                           \
-	(NR_XMITBUFF + NR_RECVBUFF + 10 * CONFIG_IFACE_NUMBER /* sta_info */)
-#endif
-#endif
+#define RTKM_MPOOL_3 0
 #endif
 #ifndef RTKM_MPOOL_4
-#ifdef CONFIG_RTW_REDUCE_MEM
-#define RTKM_MPOOL_4 2*CONFIG_IFACE_NUMBER
-#else
 #define RTKM_MPOOL_4 0
-#endif
 #endif
 #ifndef RTKM_MPOOL_5
 #define RTKM_MPOOL_5 0
 #endif
-
 #ifndef RTKM_MPOOL_6
 #define RTKM_MPOOL_6 0
 #endif
-
 #ifndef RTKM_MPOOL_7
-#ifdef CONFIG_RTW_REDUCE_MEM
 #define RTKM_MPOOL_7 0
-#else
-#define RTKM_MPOOL_7 1*CONFIG_IFACE_NUMBER
 #endif
-#endif
-
 #ifndef RTKM_MPOOL_8
 #define RTKM_MPOOL_8 0
 #endif
+
 /* Preallocated memory pool  */
 static int mpool[MAX_ORDER] = {
 	[0] = RTKM_MPOOL_0, [1] = RTKM_MPOOL_1, [2] = RTKM_MPOOL_2,

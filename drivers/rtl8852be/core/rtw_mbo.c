@@ -131,13 +131,18 @@ void rtw_mbo_ie_handler(_adapter *padapter, struct mbo_priv *mbopriv, const u8 *
 	uint total_len = 0;
 	u8 attribute_id = 0;
 	u8 attribute_len = 0;
+	u8 mbo_hdr_len = 6;
 	const u8 *p = pbuf;
 
 	if(!mbopriv)
 		return;
+	if (limit_len  > MBO_OCE_ELEMENT_MAX_LEN - mbo_hdr_len) {
+		RTW_ERR("[%s] mbo_oce_element array migh be overrun\n", __func__);
+		return ;
+	}
 
 	rtw_mbo_ie_init(padapter, mbopriv);
-	_rtw_memcpy(mbopriv->mbo_oce_element + 6, pbuf, limit_len);
+	_rtw_memcpy(mbopriv->mbo_oce_element + mbo_hdr_len, pbuf, limit_len);
 	mbopriv->mbo_oce_element[1] = limit_len + 4;
 
 	while (total_len <= limit_len) {
@@ -235,7 +240,7 @@ static u8 *rtw_mbo_attrs_get(u8 *pie,
 	u8 *p = NULL;
 	u32 offset, plen = 0;
 
-	if ((pie == NULL) || (limit <= 1))
+	if ((pie == NULL) || (limit > MAX_IE_SZ))
 		goto exit;
 
 	if ((p = rtw_mbo_ie_get(pie, &plen, limit)) == NULL)
@@ -443,7 +448,9 @@ static u8 rtw_mbo_current_op_class_get(_adapter *padapter)
 {
 	struct rf_ctl_t *prfctl = adapter_to_rfctl(padapter);
 	struct p2p_channels *pch_list =  &(prfctl->channel_list);
-	struct mlme_ext_priv *pmlmeext = &(padapter->mlmeextpriv);
+	/* ToDo CONFIG_RTW_MLD: [currently primary link only] */
+	struct _ADAPTER_LINK *padapter_link = GET_PRIMARY_LINK(padapter);
+	struct link_mlme_ext_priv *pmlmeext = &(padapter_link->mlmeextpriv);
 	struct p2p_reg_class *preg_class;
 	int class_idx, ch_idx;
 	u8 cur_op_class = 0;
@@ -626,7 +633,8 @@ exit:
 void rtw_mbo_build_extended_cap(
 	_adapter *padapter, u8 **pframe, struct pkt_attrib *pattrib)
 {
-	struct mlme_priv *pmlmepriv = &(padapter->mlmepriv);
+	struct _ADAPTER_LINK *padapter_link = pattrib->adapter_link;
+	struct link_mlme_priv *pmlmepriv = &(padapter_link->mlmepriv);
 
 	if (!rtw_mbo_wifi_logo_test(padapter))
 		return;
@@ -644,11 +652,11 @@ void rtw_mbo_build_extended_cap(
 
 static void rtw_mbo_non_pref_chans_dump(struct npref_ch* pch)
 {
-	int i;
-	u8 buf[128] = {0};
+	int i, len = 0;
+	u8 buf[256] = {0}; /* max 60ch x 4byte */
 
 	for (i=0; i < pch->nm_of_ch; i++)
-		rtw_sprintf(buf, 128, "%s,%d", buf, pch->chs[i]);
+		len += rtw_sprintf(buf + strlen(buf), sizeof(buf) - len, "%d ", pch->chs[i]);
 
 	RTW_MBO_INFO("%s : op_class=%01x, ch=%s, preference=%d, reason=%d\n",
 		__func__, pch->op_class, buf, pch->preference, pch->reason);
@@ -831,8 +839,8 @@ int rtw_mbo_proc_non_pref_chans_get(
 	struct rf_ctl_t *prfctl = adapter_to_rfctl(padapter);
 	struct npref_ch_rtp *prpt = &(prfctl->ch_rtp);
 	struct npref_ch* pch;
-	int i,j;
-	u8 buf[32] = {0};
+	int i,j,len;
+	u8 buf[256] = {0};
 
 	RTW_PRINT_SEL(m, "op_class                     ch    preference    reason \n");
 	RTW_PRINT_SEL(m, "=======================================================\n");
@@ -843,14 +851,11 @@ int rtw_mbo_proc_non_pref_chans_get(
 	}
 
 	for (i=0; i < prpt->nm_of_rpt; i++) {
+		len = 0;
+		_rtw_memset(buf, 0, sizeof(buf));
 		pch = &prpt->ch_rpt[i];
-		buf[0]='\0';
-		for (j=0; j < pch->nm_of_ch; j++) {
-			if (j == 0)
-				rtw_sprintf(buf, 32, "%02u", pch->chs[j]);
-			else
-				rtw_sprintf(buf, 32, "%s,%02u", buf, pch->chs[j]);
-		}
+		for (j=0; j < pch->nm_of_ch; j++)
+			len = rtw_sprintf(buf + len, 256 - len, "%02u ", pch->chs[j]);
 
 		RTW_PRINT_SEL(m, "    %04u    %20s           %02u        %02u\n",
 			pch->op_class, buf, pch->preference, pch->reason);
@@ -907,19 +912,21 @@ int rtw_mbo_proc_cell_data_get(
 
 
 static void rtw_mbo_disassoc(_adapter *padapter, u8 *da,
-			u8 reason, u8 wait_ack)
+			u16 reason, u8 wait_ack)
 {
 	struct xmit_frame *pmgntframe;
-        struct pkt_attrib *pattrib;
-        struct rtw_ieee80211_hdr *pwlanhdr;
-        struct xmit_priv *pxmitpriv = &(padapter->xmitpriv);
-        struct mlme_ext_priv *pmlmeext = &(padapter->mlmeextpriv);
-        struct mlme_ext_info *pmlmeinfo = &(pmlmeext->mlmext_info);
-        u8 *pframe;
-        u16 *fctrl;
-        int ret = _FAIL;
+	struct pkt_attrib *pattrib;
+	struct rtw_ieee80211_hdr *pwlanhdr;
+	struct xmit_priv *pxmitpriv = &(padapter->xmitpriv);
+	struct mlme_ext_priv *pmlmeext = &(padapter->mlmeextpriv);
+	u8 *pframe;
+	u16 *fctrl;
+	int ret = _FAIL;
+	/* ToDo CONFIG_RTW_MLD: [currently primary link only] */
+	struct _ADAPTER_LINK *padapter_link = GET_PRIMARY_LINK(padapter);
+	struct link_mlme_ext_info *pmlmeinfo = &(padapter_link->mlmeextpriv.mlmext_info);
 
-	if (rtw_rfctl_is_tx_blocked_by_ch_waiting(adapter_to_rfctl(padapter)))
+	if (alink_is_tx_blocked_by_ch_waiting(padapter_link))
 		return;
 
 	pmgntframe = alloc_mgtxmitframe(pxmitpriv);
@@ -928,7 +935,7 @@ static void rtw_mbo_disassoc(_adapter *padapter, u8 *da,
 
 	/* update attribute */
 	pattrib = &pmgntframe->attrib;
-	update_mgntframe_attrib(padapter, pattrib);
+	update_mgntframe_attrib(padapter, padapter_link, pattrib);
 	pattrib->retry_ctrl = _FALSE;
         pattrib->key_type = IEEE80211W_RIGHT_KEY;
 
@@ -940,8 +947,7 @@ static void rtw_mbo_disassoc(_adapter *padapter, u8 *da,
 
 	_rtw_memcpy(pwlanhdr->addr1, da, ETH_ALEN);
 	_rtw_memcpy(pwlanhdr->addr2, adapter_mac_addr(padapter), ETH_ALEN);
-	_rtw_memcpy(pwlanhdr->addr3,
-		get_my_bssid(&(pmlmeinfo->network)), ETH_ALEN);
+	_rtw_memcpy(pwlanhdr->addr3, get_my_bssid(&(pmlmeinfo->network)), ETH_ALEN);
 
 	SetSeqNum(pwlanhdr, pmlmeext->mgnt_seq);
 	pmlmeext->mgnt_seq++;
@@ -1443,8 +1449,9 @@ static void rtw_mbo_build_ap_capability(
 	_adapter *padapter, u8 **pframe,
 	struct pkt_attrib *pattrib)
 {
-	struct mlme_ext_priv *pmlmeext = &(padapter->mlmeextpriv);
-	struct mlme_ext_info *pmlmeinfo = &(pmlmeext->mlmext_info);
+	struct _ADAPTER_LINK *padapter_link = pattrib->adapter_link;
+	struct link_mlme_ext_priv *pmlmeext = &(padapter_link->mlmeextpriv);
+	struct link_mlme_ext_info *pmlmeinfo = &(pmlmeext->mlmext_info);
 	WLAN_BSSID_EX *cur_network = &(pmlmeinfo->network);
 	struct mlme_priv *pmlmepriv = &(padapter->mlmepriv);
 	struct mbo_attr_info *pmbo_attr = &(pmlmepriv->mbo_attr);
@@ -1560,8 +1567,9 @@ void rtw_mbo_build_probe_rsp_ies(
 void rtw_mbo_build_assoc_rsp_ies(
 	_adapter *padapter, u8 **pframe, struct pkt_attrib *pattrib)
 {
-	struct mlme_ext_priv *pmlmeext = &(padapter->mlmeextpriv);
-	struct mlme_ext_info *pmlmeinfo = &(pmlmeext->mlmext_info);
+	struct _ADAPTER_LINK *padapter_link = pattrib->adapter_link;
+	struct link_mlme_ext_priv *pmlmeext = &(padapter_link->mlmeextpriv);
+	struct link_mlme_ext_info *pmlmeinfo = &(pmlmeext->mlmext_info);
 	WLAN_BSSID_EX *cur_network = &(pmlmeinfo->network);
 	struct mlme_priv *pmlmepriv = &(padapter->mlmepriv);
 	struct mbo_attr_info *pmbo_attr = &(pmlmepriv->mbo_attr);
@@ -1596,8 +1604,9 @@ void rtw_mbo_build_assoc_rsp_ies(
 void rtw_mbo_build_wnm_btmreq_reason_ies(
 	_adapter *padapter, u8 **pframe, struct pkt_attrib *pattrib)
 {
-	struct mlme_ext_priv *pmlmeext = &(padapter->mlmeextpriv);
-	struct mlme_ext_info *pmlmeinfo = &(pmlmeext->mlmext_info);
+	struct _ADAPTER_LINK *padapter_link = pattrib->adapter_link;
+	struct link_mlme_ext_priv *pmlmeext = &(padapter_link->mlmeextpriv);
+	struct link_mlme_ext_info *pmlmeinfo = &(pmlmeext->mlmext_info);
 	WLAN_BSSID_EX *cur_network = &(pmlmeinfo->network);
 	struct mlme_priv *pmlmepriv = &(padapter->mlmepriv);
 	struct mbo_attr_info *pmbo_attr = &(pmlmepriv->mbo_attr);

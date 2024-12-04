@@ -16,10 +16,36 @@
 #define _HAL_DEF_H_
 
 #define halcom_to_drvpriv(_hcom)	(_hcom->drv_priv)
+#define hal_get_chip_id(_halcom) (_halcom->chip_id)
 
 #define MAX_WD_LEN		(48)
 #define MAX_WD_BODY_LEN (24)
-#define MAX_BAENTRY		2
+#define MAX_BAENTRY		16
+
+#define HAL_MAX_PATH HALBB_MAX_PATH
+
+enum hal_path {
+	PATH_NON = 0,
+	PATH_A = 0x00000001,
+	PATH_B = 0x00000002,
+	PATH_C = 0x00000004,
+	PATH_D = 0x00000008,
+
+	PATH_AB = (PATH_A | PATH_B),
+	PATH_AC = (PATH_A | PATH_C),
+	PATH_AD = (PATH_A | PATH_D),
+	PATH_BC = (PATH_B | PATH_C),
+	PATH_BD = (PATH_B | PATH_D),
+	PATH_CD = (PATH_C | PATH_D),
+
+	PATH_ABC = (PATH_A | PATH_B | PATH_C),
+	PATH_ABD = (PATH_A | PATH_B | PATH_D),
+	PATH_ACD = (PATH_A | PATH_C | PATH_D),
+	PATH_BCD = (PATH_B | PATH_C | PATH_D),
+
+	PATH_ABCD = (PATH_A | PATH_B | PATH_C | PATH_D),
+	PATH_AUTO = 0xff /*for auto path selection*/
+};
 
 enum HAL_CMD_ID {
 	HAL_HELP,
@@ -38,6 +64,11 @@ static const struct hal_cmd_info hal_cmd_i[] = {
 	{"sec_cam_tbl", MAC_DUMP_SEC_CAM_TBL}
 };
 
+enum rtw_hal_ser_rsn {
+	HAL_SER_RSN_NONE = 0,
+	HAL_SER_RSN_WOW,
+	HAL_SER_RSN_RFK
+};
 
 enum rtw_hal_status {
 	RTW_HAL_STATUS_SUCCESS, /* 0 */
@@ -56,24 +87,14 @@ enum rtw_hal_status {
 	RTW_HAL_STATUS_BB_CH_INFO_LAST_SEG, /*13*/
 	RTW_HAL_STATUS_UNKNOWN_RFE_TYPE, /* 14 */
 	RTW_HAL_STATUS_TIMEOUT, /* 15 */
+	RTW_HAL_STATUS_NOT_SUPPORT, /* 16 */
 };
 
 #define FW_FILE_NIC_POSTFIX ""
+#define FW_FILE_NIC_CE_POSTFIX "_ce"
 #define FW_FILE_WOWLAN_POSTFIX "_wowlan"
 #define FW_FILE_SPIC_POSTFIX "_spic"
 #define FW_FILE_AP_POSTFIX "_ap"
-
-enum rtw_fw_type {
-	RTW_FW_NIC, /* 1 */
-	RTW_FW_WOWLAN, /* 2 */
-	RTW_FW_AP, /* 3 */
-	RTW_FW_ROM, /* 4 */
-	RTW_FW_SPIC, /* 5 */
-	RTW_FW_NIC_MP, /* 6 */
-	RTW_FW_AP_MP, /* 7 */
-	RTW_FW_VRAP, /* 8 */
-	RTW_FW_MAX
-};
 
 enum _rtw_hal_query_info {
 	RTW_HAL_RXDESC_SIZE,
@@ -92,6 +113,9 @@ enum tx_pause_rson {
 	PAUSE_RSON_RFK,
 	PAUSE_RSON_PSD,
 	PAUSE_RSON_DFS,
+	PAUSE_RSON_DFS_CSA, /* allow beacon only */
+	PAUSE_RSON_DFS_CSA_MG, /* allow beacon and mgnt frame */
+	PAUSE_RSON_DFS_CAC,
 	PAUSE_RSON_DBCC,
 	PAUSE_RSON_RESET,
 	PAUSE_RSON_MAX
@@ -409,9 +433,6 @@ struct hal_io_priv {
 	struct hal_io_ops io_ops;
 };
 
-#define halcom_to_drvpriv(_hcom) (_hcom->drv_priv)
-#define hal_get_chip_id(_halcom) (_halcom->chip_id)
-
 enum pcfg_type {
 	PCFG_FUNC_SW,
 	PCFG_TBTT_AGG,
@@ -421,7 +442,9 @@ enum pcfg_type {
 	PCFG_HIQ_MAX,
 	PCFG_BCN_INTERVAL,	/* Beacon Interval */
 	PCFG_BSS_CLR,
-	PCFG_BCN_EN
+	PCFG_BCN_EN,
+	PCFG_MBSSID_EN,		/* M-BSSID ID enable */
+	PCFG_BCN_DRP_ALL
 };
 
 /*
@@ -443,10 +466,12 @@ struct bcn_entry_pool {
 };
 #endif
 
-enum rtw_hal_set_def_var_rsn {
-	SET_DEF_RSN_HAL_INIT,
-	SET_DEF_RSN_WOW_RESUME_HNDL_RX,
-	SET_DEF_RSN_WOW_RESUME_DONE
+enum rtw_hal_int_set_opt {
+	INT_SET_OPT_HAL_INIT,
+	INT_SET_OPT_SER_START,
+	INT_SET_OPT_SER_DONE,
+	INT_SET_OPT_PS_START,
+	INT_SET_OPT_PS_STOP
 };
 
 struct hal_intr_mask_cfg {
@@ -566,6 +591,7 @@ struct hal_ppdu_rx_cnt {
 /* ppdu sts mac bmp_filter */
 #define HAL_PPDU_HAS_A1M BIT(4)
 #define HAL_PPDU_HAS_CRC_OK BIT(5)
+#define HAL_PPDU_HAS_DMA_OK BIT(6)
 
 /* ppdu status (mac info + phy info) */
 struct hal_ppdu_sts {
@@ -596,6 +622,7 @@ struct rtw_cfo_info {
 	u32		tp;
 };
 
+
 struct rtw_rssi_info {
 	u8 rssi; /* u(8,1), hal-bb provide, read only : 0~110 (dBm = rssi -110) */
 	u16 rssi_ma; /* u(16,5),  hal-bb provide, read only : u16 U(12,4)*/
@@ -614,6 +641,7 @@ struct rtw_rssi_info {
 	u8 ma_rssi; /* moving average : 0 ~ PHL_MAX_RSSI (dBm = rssi - PHL_MAX_RSSI) */
 	u8 ma_rssi_mgnt; /* moving average rssi for beacon/probe : 0 ~ PHL_MAX_RSSI (dBm = rssi - PHL_MAX_RSSI) */
 	u16 snr_ma; /* u(16,4), hal-bb provide, read only, SNR= snr_ma dBm*/
+	u16 snr_ma_path[4];
 };
 
 struct rtw_rate_info {
@@ -621,6 +649,10 @@ struct rtw_rate_info {
 	enum hal_rate_mode mode; /* 2bit 0:legacy, 1:HT, 2:VHT, 3:HE*/
 	enum hal_rate_bw bw; /*2bit 0:5M/10M/20M, 1:40M, 2:80M, 3:160M or 80+80*/
 	u8 mcs_ss_idx; /*HE: 3bit SS + 4bit MCS; non-HE: 5bit MCS/rate idx */
+	u8 mcs_idx;
+	u8 ss; /* 0: 1ss, 1:2ss, ... */
+	bool is_actrl; /* 0: don't append a-ctrl field; 1: append a-ctrl field */
+	bool en_stbc; /* 0: enable stbc; 1: disable stbc */
 };
 
 /* from cmn_sta_info */
@@ -640,7 +672,6 @@ struct rtw_ra_sta_info {
 	/* u8 drv_ractrl; */
 
 	/* Ctrl */
-	u8 ra_nss_limit; /* 0: no limitation, otherwise, limit to tx nss pkt*/
 	bool dis_ra; /*move from rtw_hal_stainfo_t*/
 	bool ra_registered;/*move from rtw_hal_stainfo_t*/
 	u64 ra_mask;/*move from rtw_hal_stainfo_t*/ /*drv decide by specific req*/
@@ -726,6 +757,7 @@ enum rtw_hal_ack_resp_type {
 struct rtw_wp_rpt_stats {
 	u32 busy_cnt;
 	u32 tx_ok_cnt;
+	u32 tx_fail_cnt;
 	u32 rty_fail_cnt;
 	u32 lifetime_drop_cnt;
 	u32 macid_drop_cnt;
@@ -746,10 +778,21 @@ struct rtw_trx_stat {
 	/* Below info is for release report*/
 	u32 tx_fail_cnt;
 	u32 tx_ok_cnt;
+#if defined(CONFIG_PHL_RELEASE_RPT_ENABLE) || defined(CONFIG_PCI_HCI)
 	struct rtw_wp_rpt_stats *wp_rpt_stats;
+#endif
 #ifdef CONFIG_PCI_HCI
 	u32 ltr_tx_dly_count;
 	u32 ltr_last_tx_dly_time;
+	u32 rx_rdu_cnt;
+#endif
+#ifdef CONFIG_VW_REFINE
+	u16 pretx_fail; /* pretx fail count */
+	u16 phltx_cnt;  /* phl_tx run count */
+
+	u32 vw_cnt_snd; /* total send count for veriwave data */
+	u32 vw_cnt_rev; /* total recv count for veriwave data */
+	u32 vw_cnt_err; /* total err  count for veriwave data */
 #endif
 	u16 rx_rate;
 	u8 rx_bw;
@@ -759,6 +802,7 @@ struct rtw_trx_stat {
 struct bacam_ctrl_t {
 	u8 used_map[MAX_BAENTRY];
 	u8 tid[MAX_BAENTRY];
+	u16 mac_id[MAX_BAENTRY];
 	u8 count;
 };
 
@@ -786,14 +830,12 @@ struct rtw_hal_stainfo_t {
 	/*FW Frame Exchange : when STA is primary STA, prefer protect type and ack resp type in MU*/
 	enum rtw_hal_protection_type prot_type;
 	enum rtw_hal_ack_resp_type resp_type;
-	struct bacam_ctrl_t ba_ctl;
 
 	/* from cmn_sta_info */
 	struct rtw_ra_sta_info	ra_info;
 	/* from cmn_sta_info */
 	struct rtw_dtp_info dtp_stat;
 	struct rtw_trx_stat trx_stat;
-	void *hw_cfg_tab;
 	void *bb_sta;
 };
 
@@ -811,9 +853,11 @@ struct bus_hw_cap_t {
 	u8 l1dly_ctrl;
 	u8 ltr_sw_ctrl; /* whether ltr can be controlled by sw */
 	u8 ltr_hw_ctrl;
-	u32 max_txbd_num;
-	u32 max_rxbd_num;
-	u32 max_rpbd_num;
+	u16 max_txbd_num;
+	u16 max_rxbd_num;
+	u16 max_rpbd_num;
+	u32 max_rxbuf_size;
+	u32 max_rpbuf_size;
 	u8 max_phyaddr_num;
 	u8 max_wd_page_size;
 	u8 txbd_len;
@@ -829,6 +873,7 @@ struct bus_hw_cap_t {
 	u32 tx_mgnt_buf_num;
 	u32 tx_h2c_buf_num;
 	u32 rx_buf_size;
+	u32 rx_buf_align_size;
 	u32 rx_buf_num;
 	u32 in_token_num;
 #elif defined (CONFIG_SDIO_HCI)
@@ -850,8 +895,11 @@ struct phy_hw_cap_t {
 	#endif
 	u8 tx_num;
 	u8 rx_num;
+	u8 tx_path_num;
+	u8 rx_path_num;
 	u16 hw_rts_time_th;
 	u16 hw_rts_len_th;
+	u32 txagg_num;
 };
 
 
@@ -877,63 +925,14 @@ enum phl_rf_mode {
 	RF_MODE_MAX
 };
 
-
-/*--------------------------------------------------------------------------*/
-/*[TX Power Unit(TPU) array size]*/
-#define TPU_SIZE_PWR_TAB	16 /*MCS0~MCS11(12) + {dcm_0,1,3,4}4 = 16*/
-#define TPU_SIZE_PWR_TAB_lGCY	12 /*cck(4) + ofdm(8) = 12*/
-#define TPU_SIZE_MODE		5  /*0~4: HE, VHT, HT, Legacy, CCK, */
-#define TPU_SIZE_BW		5 /*0~4: 80_80, 160, 80, 40, 20*/
-#define TPU_SIZE_RUA		3 /*{26, 52, 106}*/
-#define TPU_SIZE_BW20_SC	8 /*8 * 20M = 160M*/
-#define TPU_SIZE_BW40_SC	4 /*4 * 40M = 160M*/
-#define TPU_SIZE_BW80_SC	2 /*2 * 80M = 160M*/
-#define TPU_SIZE_BF		2 /*{NON_BF, BF}*/
-
-#if defined(CONFIG_RTL8851A)
-	#define HAL_COMPILE_IC_1SS
-#endif
-
-#if (defined(CONFIG_RTL8852A) || defined(CONFIG_RTL8852B)  || defined(CONFIG_RTL8852C))
-	#define HAL_COMPILE_IC_2SS
-#endif
-
-#if defined(CONFIG_RTL8853A)
-	#define HAL_COMPILE_IC_3SS
-#endif
-
-#if defined(CONFIG_RTL8834A)
-	#define HAL_COMPILE_IC_4SS
-#endif
-
-/*@==========================================================================*/
-#if (defined(HAL_COMPILE_IC_4SS))
-	#define HAL_COMPILE_ABOVE_4SS
-#endif
-
-#if (defined(HAL_COMPILE_IC_3SS) || defined(HAL_COMPILE_ABOVE_4SS))
-	#define HAL_COMPILE_ABOVE_3SS
-#endif
-
-#if (defined(HAL_COMPILE_IC_2SS) || defined(HAL_COMPILE_ABOVE_3SS))
-	#define HAL_COMPILE_ABOVE_2SS
-#endif
-
-#if (defined(HAL_COMPILE_IC_1SS) || defined(HAL_COMPILE_ABOVE_2SS))
-	#define HAL_COMPILE_ABOVE_1SS
-#endif
-
-#if (defined(HAL_COMPILE_ABOVE_4SS))
-	#define HAL_MAX_PATH	4
-#elif (defined(HAL_COMPILE_ABOVE_3SS))
-	#define HAL_MAX_PATH	3
-#elif (defined(HAL_COMPILE_ABOVE_2SS))
-	#define HAL_MAX_PATH	2
-#else
-	#define HAL_MAX_PATH	1
-#endif
+enum phl_pwr_ctrl {
+	ALL_TIME_CTRL = 0,
+        GNT_TIME_CTRL,
+        PWR_CTRL_MAX
+};
 
 /*--------------------------[Structure]-------------------------------------*/
+#if 0
 enum rtw_tpu_op_mode {
 	TPU_NORMAL_MODE		= 0,
 	TPU_DBG_MODE		= 1
@@ -942,14 +941,6 @@ enum rtw_tpu_op_mode {
 struct rtw_tpu_pwr_by_rate_info { /*TX Power Unit (TPU)*/
 	s8 pwr_by_rate_lgcy[TPU_SIZE_PWR_TAB_lGCY];
 	s8 pwr_by_rate[HAL_MAX_PATH][TPU_SIZE_PWR_TAB];
-};
-
-struct rtw_tpu_ext_pwr_lmt_info { /*TX Power Unit (TPU)*/
-	s8 ext_pwr_lmt_2_4g[HAL_MAX_PATH];
-	s8 ext_pwr_lmt_5g_band1[HAL_MAX_PATH]; /*CH36 ~ CH48*/
-	s8 ext_pwr_lmt_5g_band2[HAL_MAX_PATH]; /*CH52 ~ CH64*/
-	s8 ext_pwr_lmt_5g_band3[HAL_MAX_PATH]; /*CH100 ~ CH144*/
-	s8 ext_pwr_lmt_5g_band4[HAL_MAX_PATH]; /*CH149 ~ CH165*/
 };
 
 struct rtw_tpu_pwr_imt_info { /*TX Power Unit (TPU)*/
@@ -969,6 +960,8 @@ struct rtw_tpu_info { /*TX Power Unit (TPU)*/
 	bool normal_mode_lock_en;
 	s8 ofst_int; /*SW: S(8,3) -16 ~ +15.875 (dB)*/
 	u8 ofst_fraction; /*[0:3] * 0.125(dBm)*/
+	enum hal_path ref_pow_path; /*Select the path with larger pow as the re_ path*/
+	u8 path_pow_ofst_decrease; /* Select the path with lower pow and subtract pow_path_ofst_decrease from path_ref*/
 	u8 base_cw_0db; /*[63~39~15]: [+24~0~-24 dBm]*/
 	u16 tssi_16dBm_cw;
 	/*[Ref Pwr]*/
@@ -987,10 +980,13 @@ struct rtw_tpu_info { /*TX Power Unit (TPU)*/
 	s8 pwr_lmt_ru[HAL_MAX_PATH][TPU_SIZE_RUA][TPU_SIZE_BW20_SC];
 	u16 pwr_lmt_ru_mem_size;
 	bool pwr_lmt_en;
+	bool ext_pwr_lmt_en;
+	struct rtw_phl_ext_pwr_lmt_info ext_pwr_lmt_i;
 	u8 tx_ptrn_shap_idx;
 	u8 tx_ptrn_shap_idx_cck;
+	u16 pwr_constraint_mb;
 };
-
+#endif
 struct rtw_hal_stat_info {
 	u32 cnt_fail_all;
 	u32 cnt_cck_fail;
@@ -1018,13 +1014,25 @@ struct rtw_hw_band {
 	u8 ppdu_sts_appen_info;
 	u8 ppdu_sts_filter;
 	struct rtw_tpu_info rtw_tpu_i; /*TX Power Unit (TPU)*/
+	union bb_tpu_all_info bb_tpu_all_i; /*TX Power Unit (TPU)*/
 	u16 tx_pause[PAUSE_RSON_MAX]; /* ref: enum rtw_sch_txen_cfg */
 	struct rtw_hal_stat_info stat_info;
+	u8 assoc_sta_cnt; /*number of associated nodes (sta or ap)*/
+	enum rtw_rx_fltr_opt_mode rx_fltr_opt_mode;
+};
+
+struct rtw_intr_t {
+	bool en;
+	u32 mask_dflt;
+	u32 mask;
+	u32 val;
 };
 
 struct rtw_hal_com_t {
 	enum rtw_chip_id chip_id;
 	enum rtw_cv cv;
+	enum rtw_cv acv;
+	enum rtw_fv fv;
 
 	struct ver_ctrl_t mac_vc;
 	struct ver_ctrl_t bb_vc;
@@ -1051,21 +1059,21 @@ struct rtw_hal_com_t {
 	bool dbcc_en;
 	u8 assoc_sta_cnt; /*number of associated nodes (sta or ap)*/
 
-	u8 rfpath_tx_num; /* rf path - instead of rf_type -1T1R.... */
-	u8 rfpath_rx_num;
 #ifdef RTW_WKARD_SINGLE_PATH_RSSI
 	enum rf_path cur_rx_rfpath;
 #endif
-
-	bool ext_pwr_lmt_en;
-	struct rtw_tpu_ext_pwr_lmt_info rtw_tpu_ext_pwr_lmt_i[MAX_BAND_NUM];/*for phy0 & phy1 exetend power limit*/
-
-
 #ifdef CONFIG_PCI_HCI /*TODO move to hal_info_t*/
 	/*interrupt*/
 	u32 int_array[4];
 	u32 int_mask[4];
 	u32 int_mask_default[4];
+
+	struct rtw_intr_t _intr_ind[4];
+	struct rtw_intr_t _intr[4];
+	bool in_ps_intr_cfg;
+#ifdef PHL_RXSC_ISR
+	u32 rx_int_array;
+#endif
 #endif /* CONFIG_PCI_HCI */
 #ifdef CONFIG_SDIO_HCI /*TODO move to hal_info_t*/
 	u32 block_sz;
@@ -1101,6 +1109,8 @@ struct rtw_hal_com_t {
 	u8 spe_pkt_cnt_lmt;
 #endif
 	u32 uuid;
+	u8 scanofld_en;
+	struct bacam_ctrl_t ba_ctl;
 };
 
 #define FL_CFG_OP_SET 0
@@ -1122,20 +1132,6 @@ struct rtw_hal_com_t {
 #define FL_OP_UART BIT0
 #define FL_OP_C2H BIT1
 #define FL_OP_SNI BIT2
-
-#define FL_COMP_VER BIT0
-#define FL_COMP_INIT BIT1
-#define FL_COMP_TASK BIT2
-#define FL_COMP_CNS BIT3
-#define FL_COMP_H2C BIT4
-#define FL_COMP_C2H BIT5
-#define FL_COMP_TX BIT6
-#define FL_COMP_RX BIT7
-#define FL_COMP_IPSEC BIT8
-#define FL_COMP_TIMER BIT9
-#define FL_COMP_DBGPKT BIT10
-#define FL_COMP_PS BIT11
-#define FL_COMP_BB BIT16
 
 struct rtw_hal_fw_log_cfg {
 	u32 level;
@@ -1196,6 +1192,10 @@ struct rtw_hal_lps_info {
 	enum rtw_lps_listen_bcn_mode listen_bcn_mode;
 	u8 awake_interval;
 	enum rtw_lps_smart_ps_mode smart_ps_mode;
+	u8 bcnnohit_en;
+	u8 dyntxant_en;
+	u8 maxtxant;
+	u8 lpstxant;
 };
 
 struct rtw_hal_ips_info {
@@ -1215,6 +1215,13 @@ enum ps_pwr_state {
 };
 
 #ifdef CONFIG_PHL_DFS
+struct hal_mac_dfs_rpt_cfg {
+	bool rpt_en;
+	u8 rpt_num_th;
+	bool rpt_en_to;
+	u8 rpt_to;
+};
+
 struct hal_dfs_rpt {
 	u8 *dfs_ptr;
 	u16 dfs_num;
@@ -1234,6 +1241,7 @@ struct rtw_hal_wow_cfg {
 	struct rtw_wow_wake_info *wow_wake_cfg;
 	struct rtw_pattern_match_info *pattern_match_info;
 	struct rtw_wow_gpio_info *wow_gpio;
+	struct rtw_periodic_wake_info *periodic_wake_cfg;
 };
 #endif /* CONFIG_WOWLAN */
 
@@ -1244,13 +1252,6 @@ enum hal_tsf_sync_act {
 	HAL_TSF_DIS_SYNC_AUTO = 2,
 };
 
-#ifdef CONFIG_RTW_ACS
-struct auto_chan_sel_report {
-	u8 clm_ratio;
-	u8 nhm_pwr;
-};
-#endif
-
 struct watchdog_nhm_report {
 	u8 ccx_rpt_stamp;
 	u8 ccx_rpt_result;
@@ -1258,6 +1259,7 @@ struct watchdog_nhm_report {
 	u8 nhm_ratio;
 };
 
+#define GT3_TIMEOUT_MASK 0x0FFFFFFF
 struct hal_mac_dbg_dump_cfg {
 	u32 ss_dbg_0;
 	u32 ss_dbg_1;
@@ -1268,6 +1270,31 @@ struct hal_mac_dbg_dump_cfg {
 	u8 mac_dbg_port;
 	u8 plersvd_dbg;
 	u8 tx_flow_dbg;
+};
+
+/**
+ * @enum rtw_hal_lps_flg_state
+ * @brief rtw_hal_lps_flg_state
+ *
+ * @var rtw_hal_lps_flg_state::RTW_HAL_LPS_FLG_STATE_ACTIVE
+ * Active mode or lps rf off
+ * @var rtw_hal_lps_flg_state::RTW_HAL_LPS_FLG_STATE_LPS
+ * Enter lps cg or lps pg
+ *
+ */
+enum rtw_hal_lps_flg_state {
+	RTW_HAL_LPS_FLG_STATE_ACTIVE = 0,
+	RTW_HAL_LPS_FLG_STATE_LPS = 1,
+	RTW_HAL_LPS_FLG_STATE_MAX,
+};
+
+struct hal_ppdu_sts_cfg {
+	u8 band_idx;
+	bool ppdu_stat_en;
+	u8 appen_info;
+	u8 filter;
+	bool towcpu;
+	bool todcpu;
 };
 
 #endif /*_HAL_DEF_H_*/

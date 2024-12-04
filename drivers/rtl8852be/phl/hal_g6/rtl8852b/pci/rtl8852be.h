@@ -14,7 +14,6 @@
  *****************************************************************************/
 #ifndef _RTL8852BE_H_
 #define _RTL8852BE_H_
-#include "../../hal_headers.h"
 
 /*provide IC-BUS's function declaration or definition to IC*/
 

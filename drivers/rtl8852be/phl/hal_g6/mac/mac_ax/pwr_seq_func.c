@@ -14,14 +14,24 @@
  ******************************************************************************/
 
 #include "pwr_seq_func.h"
-#define MAC_AX_PWR_POLL_CNT 20
+#define MAC_AX_PWR_POLL_CNT 3000
+#define MAC_AX_PWR_POLL_CNT_PXP 3000
 #define MAC_AX_PWR_POLL_MS 1
 
 u32 pwr_poll_u32(struct mac_ax_adapter *adapter, u32 offset,
 		 u32 mask, u32 pwr_val)
 {
 	struct mac_ax_intf_ops *ops = adapter_to_intf_ops(adapter);
-	u32 cnt = MAC_AX_PWR_POLL_CNT, val;
+	u32 cnt = 0, val = 0;
+
+#if MAC_AX_FEATURE_HV
+	if (adapter->env == HV_AX_PXP)
+		cnt = MAC_AX_PWR_POLL_CNT_PXP;
+	else
+		cnt = MAC_AX_PWR_POLL_CNT;
+#else
+	cnt = MAC_AX_PWR_POLL_CNT;
+#endif
 
 	while (--cnt) {
 		val = MAC_REG_R32(offset);
@@ -41,8 +51,17 @@ u32 pwr_poll_u16(struct mac_ax_adapter *adapter, u32 offset,
 		 u16 mask, u16 pwr_val)
 {
 	struct mac_ax_intf_ops *ops = adapter_to_intf_ops(adapter);
-	u32 cnt = MAC_AX_PWR_POLL_CNT;
-	u16 val;
+	u32 cnt = 0;
+	u16 val = 0;
+
+#if MAC_AX_FEATURE_HV
+	if (adapter->env == HV_AX_PXP)
+		cnt = MAC_AX_PWR_POLL_CNT_PXP;
+	else
+		cnt = MAC_AX_PWR_POLL_CNT;
+#else
+	cnt = MAC_AX_PWR_POLL_CNT;
+#endif
 
 	while (--cnt) {
 		val = MAC_REG_R16(offset);
@@ -62,8 +81,17 @@ u32 pwr_poll_u8(struct mac_ax_adapter *adapter, u32 offset,
 		u8 mask, u8 pwr_val)
 {
 	struct mac_ax_intf_ops *ops = adapter_to_intf_ops(adapter);
-	u32 cnt = MAC_AX_PWR_POLL_CNT;
-	u8 val;
+	u32 cnt = 0;
+	u8 val = 0;
+
+#if MAC_AX_FEATURE_HV
+	if (adapter->env == HV_AX_PXP)
+		cnt = MAC_AX_PWR_POLL_CNT_PXP;
+	else
+		cnt = MAC_AX_PWR_POLL_CNT;
+#else
+	cnt = MAC_AX_PWR_POLL_CNT;
+#endif
 
 	while (--cnt) {
 		val = MAC_REG_R8(offset);

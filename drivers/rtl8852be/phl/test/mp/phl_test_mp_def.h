@@ -54,11 +54,14 @@ enum mp_tx_cmd {
 	MP_TX_CMD_PHY_OK,
 	MP_TX_CONFIG_PLCP_PATTERN,
 	MP_TX_CONFIG_PLCP_USER_INFO,
-	MP_TX_MODE_SWITCH,
-	MP_TX_F2P,
 	MP_TX_TB_TEST,
 	MP_TX_DPD_BYPASS,
 	MP_TX_CHECK_TX_IDLE,
+	MP_TX_CMD_BB_LOOPBCK,
+	MP_TX_SET_PARA_BY_BT_LINK,
+	MP_TX_CMD_SW_TX_START,
+	MP_TX_CMD_SW_TX_STOP,
+	MP_TX_CMD_MAC_LBK_TX_RPT,
 	MP_TX_CMD_MAX,
 };
 
@@ -71,6 +74,7 @@ enum mp_config_cmd {
 	MP_CONFIG_CMD_SET_RESET_PHY_COUNT,
 	MP_CONFIG_CMD_SET_RESET_MAC_COUNT,
 	MP_CONFIG_CMD_SET_RESET_DRV_COUNT,
+	MP_CONFIG_CMD_SET_TXRX_MODE,
 	MP_CONFIG_CMD_PBC,
 	MP_CONFIG_CMD_START_DUT,
 	MP_CONFIG_CMD_STOP_DUT,
@@ -92,6 +96,15 @@ enum mp_config_cmd {
 	MP_CONFIG_CMD_GET_DEV_IDX,
 	MP_CONFIG_CMD_TRIGGER_FW_CONFLICT,
 	MP_CONFIG_CMD_GET_UUID,
+	MP_CONFIG_CMD_SET_REGULATION,
+	MP_CONFIG_CMD_SET_BT_UART,
+	MP_CONFIG_CMD_SWITCH_ANTENNA,
+	MP_CONFIG_CMD_SET_MAC_LOOPBK_ENTER,
+	MP_CONFIG_CMD_SET_HCI_SPEED,
+	MP_CONFIG_CMD_GET_HCI_SPEED,
+	MP_CONFIG_CMD_SET_MAC_GENERNAL_IO_TEST,
+	MP_CONFIG_CMD_SET_MAC_L1SS_ENABLE,
+	MP_CONFIG_CMD_SET_MAC_ASPM_STATE,
 	MP_CONFIG_CMD_SET_GPIO,
 	MP_CONFIG_CMD_MAX,
 };
@@ -110,6 +123,7 @@ enum mp_rx_cmd {
 	MP_RX_CMD_TRIGGER_RXEVM = 9,
 	MP_RX_CMD_SET_GAIN_OFFSET = 10,
 	MP_RX_CMD_GET_RSSI_EX = 11,
+	MP_RX_CMD_SET_RX_FLTR = 12,
 	MP_RX_CMD_MAX,
 };
 
@@ -215,6 +229,8 @@ enum mp_cal_cmd {
 	MP_CAL_CMD_PSD_RESTORE = 9,
 	MP_CAL_CMD_PSD_GET_POINT_DATA = 10,
 	MP_CAL_CMD_PSD_QUERY = 11,
+	MP_CAL_CMD_EVENT_TRIGGER = 12,
+	MP_CAL_CMD_TRIGGER_WATCHDOG_CAL = 13,
 	MP_CAL_CMD_MAX,
 };
 
@@ -236,12 +252,17 @@ enum mp_calibration_type {
 	MP_CAL_MAX,
 };
 
-
 /*
  *	Command structure definition.
  *	Fixed part would be mp_class/cmd/cmd_ok for command and report parsing.
  *	Data members might have input or output usage.
  */
+
+struct mp_mac_lbk_tx_rpt {
+	u32 total_cnt;
+	u32 idle_cnt;
+	u32 busy_cnt;
+};
 
 struct mp_arg_hdr {
 	u8 mp_class;
@@ -259,7 +280,9 @@ struct mp_config_arg {
 	u8 bandwidth;
 	u8 rate_idx;
 	u8 ant_tx;
+	u8 tx_rfpath;
 	u8 ant_rx;
+	u8 rx_rfpath;
 	u8 rf_path;
 	u8 get_rfstats;
 	u8 modulation;
@@ -274,7 +297,16 @@ struct mp_config_arg {
 	u8 dev_id;
 	u32 offset;
 	u8 voltag;
+	u8 band;
 	u32 uuid;
+	u8 regulation;
+	u8 frc_switch;
+	u8 is_tmac_mode;
+	u32 drv_ver;
+	u8 phy_idx;
+	u8 is_bt_uart;
+	u8 ant_sw;
+	u8 hci_speed;
 	u8 gpio_id;
 	u8 gpio_enable;
 };
@@ -297,6 +329,7 @@ struct mp_tx_arg {
 	u8 tx_path;
 	u8 tx_mode;		/* mode: 0 = tmac, 1 = pmac */
 	u8 tx_concurrent_en;	/* concurrent tx */
+	u8 phy_idx;
 	u8 dpd_bypass;
 	/* plcp info */
 	u32 dbw; //0:BW20, 1:BW40, 2:BW80, 3:BW160/BW80+80
@@ -370,222 +403,35 @@ struct mp_tx_arg {
 	u8 bSS_id_addr5;
 	u8 is_link_mode;
 
-	/* f2p cmd */
-	u32 pref_AC_0;
-	u32 aid12_0;
-	u32 ul_mcs_0;
-	u32 macid_0;
-	u32 ru_pos_0;
-	u32 ul_fec_code_0;
-	u32 ul_dcm_0;
-	u32 ss_alloc_0;
-	u32 ul_tgt_rssi_0;
-	u32 pref_AC_1;
-	u32 aid12_1;
-	u32 ul_mcs_1;
-	u32 macid_1;
-	u32 ru_pos_1;
-	u32 ul_fec_code_1;
-	u32 ul_dcm_1;
-	u32 ss_alloc_1;
-	u32 ul_tgt_rssi_1;
-	u32 pref_AC_2;
-	u32 aid12_2;
-	u32 ul_mcs_2;
-	u32 macid_2;
-	u32 ru_pos_2;
-	u32 ul_fec_code_2;
-	u32 ul_dcm_2;
-	u32 ss_alloc_2;
-	u32 ul_tgt_rssi_2;
-	u32 pref_AC_3;
-	u32 aid12_3;
-	u32 ul_mcs_3;
-	u32 macid_3;
-	u32 ru_pos_3;
-	u32 ul_fec_code_3;
-	u32 ul_dcm_3;
-	u32 ss_alloc_3;
-	u32 ul_tgt_rssi_3;
-	u32 ul_bw;
-	u32 gi_ltf;
-	u32 num_he_ltf;
-	u32 ul_stbc;
-	u32 pkt_doppler;
-	u32 ap_tx_power;
-	u32 user_num;
-	u32 pktnum;
-	u32 pri20_bitmap;
-	u32 datarate;
-	u32 mulport_id;
-	u32 pwr_ofset;
-	u32 f2p_mode;
-	u32 frexch_type;
-	u32 sigb_len;
-	/* dword 0 */
-	u32 cmd_qsel;
-	u32 ls;
-	u32 fs;
-	u32 total_number;
-	u32 seq;
-	u32 length;
-	/* dword 1 */
-	/* dword 0 */
-	u32 cmd_type;
-	u32 cmd_sub_type;
-	u32 dl_user_num;
-	u32 bw;
-	u32 tx_power;
-	/* dword 1 */
-	u32 fw_define;
-	u32 ss_sel_mode;
-	u32 next_qsel;
-	u32 twt_group;
-	u32 dis_chk_slp;
-	u32 ru_mu_2_su;
-	u32 dl_t_pe;
-	/* dword 2 */
-	u32 sigb_ch1_len;
-	u32 sigb_ch2_len;
-	u32 sigb_sym_num;
-	u32 sigb_ch2_ofs;
-	u32 dis_htp_ack;
-	u32 tx_time_ref;
-	u32 pri_user_idx;
-	/* dword 3 */
-	u32 ampdu_max_txtime;
-	u32 d3_group_id;
-	u32 twt_chk_en;
-	u32 twt_port_id;
-	/* dword 4 */
-	u32 twt_start_time;
-	/* dword 5 */
-	u32 twt_end_time;
-	/* dword 6 */
-	u32 apep_len;
-	u32 tri_pad;
-	u32 ul_t_pe;
-	u32 rf_gain_idx;
-	u32 fixed_gain_en;
-	u32 ul_gi_ltf;
-	u32 ul_doppler;
-	u32 d6_ul_stbc;
-	/* dword 7 */
-	u32 ul_mid_per;
-	u32 ul_cqi_rrp_tri;
-	u32 sigb_dcm;
-	u32 sigb_comp;
-	u32 d7_doppler;
-	u32 d7_stbc;
-	u32 mid_per;
-	u32 gi_ltf_size;
-	u32 sigb_mcs;
-	/* dword 8 */
-	u32 macid_u0;
-	u32 ac_type_u0;
-	u32 mu_sta_pos_u0;
-	u32 dl_rate_idx_u0;
-	u32 dl_dcm_en_u0;
-	u32 ru_alo_idx_u0;
-	/* dword 9 */
-	u32 pwr_boost_u0;
-	u32 agg_bmp_alo_u0;
-	u32 ampdu_max_txnum_u0;
-	u32 user_define_u0;
-	u32 user_define_ext_u0;
-	/* dword 10 */
-	u32 ul_addr_idx_u0;
-	u32 ul_dcm_u0;
-	u32 ul_fec_cod_u0;
-	u32 ul_ru_rate_u0;
-	u32 ul_ru_alo_idx_u0;
-	/* dword 11 */
-	/* dword 12 */
-	u32 macid_u1;
-	u32 ac_type_u1;
-	u32 mu_sta_pos_u1;
-	u32 dl_rate_idx_u1;
-	u32 dl_dcm_en_u1;
-	u32 ru_alo_idx_u1;
-	/* dword 13 */
-	u32 pwr_boost_u1;
-	u32 agg_bmp_alo_u1;
-	u32 ampdu_max_txnum_u1;
-	u32 user_define_u1;
-	u32 user_define_ext_u1;
-	/* dword 14 */
-	u32 ul_addr_idx_u1;
-	u32 ul_dcm_u1;
-	u32 ul_fec_cod_u1;
-	u32 ul_ru_rate_u1;
-	u32 ul_ru_alo_idx_u1;
-	/* dword 15 */
-	/* dword 16 */
-	u32 macid_u2;
-	u32 ac_type_u2;
-	u32 mu_sta_pos_u2;
-	u32 dl_rate_idx_u2;
-	u32 dl_dcm_en_u2;
-	u32 ru_alo_idx_u2;
-	/* dword 17 */
-	u32 pwr_boost_u2;
-	u32 agg_bmp_alo_u2;
-	u32 ampdu_max_txnum_u2;
-	u32 user_define_u2;
-	u32 user_define_ext_u2;
-	/* dword 18 */
-	u32 ul_addr_idx_u2;
-	u32 ul_dcm_u2;
-	u32 ul_fec_cod_u2;
-	u32 ul_ru_rate_u2;
-	u32 ul_ru_alo_idx_u2;
-	/* dword 19 */
-	/* dword 20 */
-	u32 macid_u3;
-	u32 ac_type_u3;
-	u32 mu_sta_pos_u3;
-	u32 dl_rate_idx_u3;
-	u32 dl_dcm_en_u3;
-	u32 ru_alo_idx_u3;
-	/* dword 21 */
-	u32 pwr_boost_u3;
-	u32 agg_bmp_alo_u3;
-	u32 ampdu_max_txnum_u3;
-	u32 user_define_u3;
-	u32 user_define_ext_u3;
-	/* dword 22 */
-	u32 ul_addr_idx_u3;
-	u32 ul_dcm_u3;
-	u32 ul_fec_cod_u3;
-	u32 ul_ru_rate_u3;
-	u32 ul_ru_alo_idx_u3;
-	/* dword 23 */
-	/* dword 24 */
-	u32 pkt_id_0;
-	u32 valid_0;
-	u32 ul_user_num_0;
-	/* dword 25 */
-	u32 pkt_id_1;
-	u32 valid_1;
-	u32 ul_user_num_1;
-	/* dword 26 */
-	u32 pkt_id_2;
-	u32 valid_2;
-	u32 ul_user_num_2;
-	/* dword 27 */
-	u32 pkt_id_3;
-	u32 valid_3;
-	u32 ul_user_num_3;
-	/* dword 28 */
-	u32 pkt_id_4;
-	u32 valid_4;
-	u32 ul_user_num_4;
-	/* dword 29 */
-	u32 pkt_id_5;
-	u32 valid_5;
-	u32 ul_user_num_5;
 	/* tx state*/
 	u8 tx_state;
+
+	/* bb loop back*/
+	u8 enable;
+	u8 is_dgt;
+	u8 cck_lbk_en;
+	u8 is_bt_link;
+
+	u32 puncture;
+	/* txsb */
+	u32 txsb;
+	u32 eht_mcs_sig;
+
+	/* sw tx*/
+	u8 mac_addr_0;
+	u8 mac_addr_1;
+	u8 mac_addr_2;
+	u8 mac_addr_3;
+	u8 mac_addr_4;
+	u8 mac_addr_5;
+	u32 sw_tx_payload_size;
+
+	/* ampdu control */
+	u8 ampdu_num;
+	u8 sw_tx_en;
+
+	/* mac loop back */
+	struct mp_mac_lbk_tx_rpt tx_rpt;
 };
 
 struct mp_rx_arg {
@@ -602,18 +448,17 @@ struct mp_rx_arg {
 	u8 strm;
 	u8 rxevm_table;
 	u8 enable;
-	u32 phy0_user0_rxevm;
-	u32 phy0_user1_rxevm;
-	u32 phy0_user2_rxevm;
-	u32 phy0_user3_rxevm;
-	u32 phy1_user0_rxevm;
-	u32 phy1_user1_rxevm;
-	u32 phy1_user2_rxevm;
-	u32 phy1_user3_rxevm;
+	u32 phy_user0_rxevm;
+	u32 phy_user1_rxevm;
+	u32 phy_user2_rxevm;
+	u32 phy_user3_rxevm;
 	s8 offset;
 	u8 rf_path;
 	u8 iscck;
-	s16 rssi_ex;
+	s32 rssi_ex[4];
+	u8 rx_phy_idx;
+	u8 rx_fltr_addr[6];
+	u8 rx_fltr_enable;
 };
 
 struct mp_efuse_arg {
@@ -681,6 +526,7 @@ struct mp_txpwr_arg {
 	s32 online_tssi_de;
 	bool pwr_lmt_en;
 	u8 sharp_id;
+	u8 cur_phy;
 };
 
 struct mp_cal_arg {
@@ -704,7 +550,9 @@ struct mp_cal_arg {
 	u32 start_point;
 	u32 stop_point;
 	u32 buf;
-	u32 outbuf[450];
+	u32 outbuf[400];
+	u8 event;
+	u8 func;
 };
 
 struct mp_flash_arg {
@@ -716,6 +564,11 @@ struct mp_flash_arg {
 };
 
 struct rtw_phl_com_t;
+
+struct phl_mp_watchdog {
+	_os_timer wdog_timer;
+	u16 period;
+};
 
 struct mp_context {
 	u8 status;
@@ -732,6 +585,10 @@ struct mp_context {
 	struct rtw_phl_com_t *phl_com;
 	void *hal;
 	struct mp_usr_plcp_gen_in usr[4];
+	u32 max_para;
+	struct phl_mp_watchdog mp_wdog;
+	struct mp_cal_arg cal_arg;
+	u8 is_mp_wdog_start;
 };
 #endif /* CONFIG_PHL_TEST_MP */
 

@@ -54,8 +54,13 @@ int process_p2p_cross_connect_ie(_adapter *padapter, u8 *IEs, u32 IELength);
 void	process_p2p_ps_ie(_adapter *padapter, u8 *IEs, u32 IELength);
 void	p2p_ps_wk_hdl(_adapter *padapter, u8 p2p_ps_state);
 u8	p2p_ps_wk_cmd(_adapter *padapter, u8 p2p_ps_state, u8 enqueue);
+u8 *rtw_append_p2p_go_noa_ie(struct _ADAPTER *adapter, u8 *frame, u32 *len);
+void rtw_core_register_p2pps_ops(struct dvobj_priv *dvobj);
+void rtw_append_probe_resp_p2p_go_noa(struct xmit_frame *xframe);
 #endif /* CONFIG_P2P_PS */
 
+void rtw_append_probe_resp_p2p_ie(struct xmit_frame *xframe);
+void rtw_append_probe_resp_vendor_ie(struct xmit_frame *xframe);
 #ifdef CONFIG_IOCTL_CFG80211
 int rtw_p2p_check_frames(_adapter *padapter, const u8 *buf, u32 len, u8 tx);
 #endif /* CONFIG_IOCTL_CFG80211 */

@@ -27,7 +27,6 @@ enum rtw_regulation_freq_group {
 	FREQ_GROUP_6GHZ_UNII6,
 	FREQ_GROUP_6GHZ_UNII7,
 	FREQ_GROUP_6GHZ_UNII8,
-	FREQ_GROUP_6GHZ_PSC,
 	FREQ_GROUP_MAX
 };
 
@@ -45,52 +44,40 @@ struct rtw_regulation_chplan_group {
 	struct rtw_regulation_channel ch[MAX_CH_NUM_GROUP];
 };
 
-#define MAX_HISTORY_NUM 20
-
-#define INVALID_DOMAIN_CODE 0xffff
-#define INVALID_CHDEF 0xff
-
 struct rtw_domain {
-	u16 code;
+	u8 code;
 	u8 reason;
 };
 
-struct rtw_regulation {
-	_os_lock lock;
-	u8 init; /* regulation sw initialization */
-	u8 invalid_cnt;
-	u8 history_cnt;
-	struct rtw_domain history[MAX_HISTORY_NUM];
+bool rtw_phl_set_regulation_info(void* phl,
+	struct rtw_regulation_info *regu_info);
 
-	/* working regulation */
-	bool valid; /* true if domain code successfully set */
-	u16 capability; /* rtw_regulation_capability */
-	struct rtw_domain domain;
-	char country[2];
-	u8 tpo; /* tx power overwrite */
-	u8 support_mode;
+bool rtw_phl_regu_interface_init(void *phl);
 
-	u8 ch_idx2g; /* 2ghz chdef index */
-	u8 regulation_2g;
-	u8 ch_idx5g; /* 5ghz chdef index */
-	u8 regulation_5g;
+bool rtw_phl_regu_interface_deinit(void *phl);
 
-	struct rtw_regulation_chplan_group chplan[FREQ_GROUP_MAX];
+enum rtw_regulation_freq_group
+rtw_phl_get_regu_freq_group(enum band_type band, u8 ch);
 
-	/* 6 ghz */
-	u8 invalid_cnt_6g;
-	u8 history_cnt_6g;
-	struct rtw_domain history_6g[MAX_HISTORY_NUM];
-	bool valid_6g; /* true if domain code successfully set */
-	struct rtw_domain domain_6g;
-	u8 ch_idx6g; /* 6ghz chdef index */
-	u8 regulation_6g;
-};
+u8 rtw_phl_get_regu_country_ver_ex(
+	void *phl, u8 tbl_idx);
 
-bool rtw_phl_regulation_query_ch(void *phl, enum band_type band, u8 channel,
-					struct rtw_regulation_channel *ch);
+u8 rtw_phl_get_regu_chplan_ver_ex(
+	void *phl, u8 tbl_idx);
 
-u8 rtw_phl_get_domain_regulation_2g(u8 domain);
-u8 rtw_phl_get_domain_regulation_5g(u8 domain);
+void rtw_phl_get_6g_regulatory_info(void *phl,
+	u8 domain, u8 *dm_code, u8 *regulation, u8 *ch_idx,
+	u8 tbl_idx);
+
+void rtw_phl_get_chdef_6g(void *phl,
+	u8 ch_idx, struct chdef_6ghz *chdef, u8 tbl_idx);
+
+u8 rtw_phl_get_cat6g_by_country_ex(void *phl,
+	char *country, u8 tbl_idx);
+
+/* legacy api, will be removed */
+u8 rtw_phl_get_cat6g_by_country(char *cntry);
+u8 rtw_phl_get_regu_country_ver(void);
+u8 rtw_phl_get_regu_chplan_ver(void);
 
 #endif /* _PHL_REGULATION_H_ */

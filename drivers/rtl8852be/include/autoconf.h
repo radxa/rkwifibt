@@ -1,6 +1,6 @@
 /******************************************************************************
  *
- * Copyright(c) 2007 - 2019 Realtek Corporation.
+ * Copyright(c) 2007 - 2021 Realtek Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of version 2 of the GNU General Public License as
@@ -17,6 +17,7 @@
 
 /*#define CONFIG_NO_FW*/
 /*#define CONFIG_DISABLE_ODM*/
+#define CONFIG_MSG_NUM 128
 
 #define RTW_WKARD_CORE_RSSI_V1
 
@@ -39,6 +40,16 @@
  * Work around Config
  */
 #define RTW_WKARD_DIS_PROBE_REQ_RPT_TO_HOSTAPD
+#define CONFIG_WKARD_ULMU
+
+#ifdef CONFIG_BTC
+#define RTK_WKARD_CORE_BTC_STBC_CAP
+#endif
+
+
+#define RTW_WKARD_PCI_DEVRM_DIS_INT
+
+#define RTW_WKARD_TX_DROP
 
 /***** temporarily flag *******/
 /*
@@ -58,7 +69,108 @@
 	#endif
 #endif
 
+#define CORE_TXBD_NUM 256
+#define CORE_RXBD_NUM 256
 #define CONFIG_RPQ_AGG_NUM 30
+#define CONFIG_TX_WD_NUM 512 /* if not defined, use phl default wd num: MAX_WD_PAGE_NUM (i.e. 256) */
+#define CORE_TX_AMSDU_AGG_NUM 3
+#define CONFIG_READ_TXBD_LVL 1
+
+#ifdef PLAT_MAX_PHL_TX_RING_ENTRY_NUM
+#define MAX_PHL_TX_RING_ENTRY_NUM PLAT_MAX_PHL_TX_RING_ENTRY_NUM
+#else
+#define MAX_PHL_TX_RING_ENTRY_NUM 512
+#endif
+
+#ifdef PLAT_MAX_PHL_RX_RING_ENTRY_NUM
+#define MAX_PHL_RX_RING_ENTRY_NUM PLAT_MAX_PHL_RX_RING_ENTRY_NUM
+#else
+#define MAX_PHL_RX_RING_ENTRY_NUM 1024
+#endif
+
+#define CONFIG_RTW_REDUCE_MEM  /* Note: if CONFIG_RTW_REDUCE_MEM is not defined, MAX_PHL_RX_RING_ENTRY_NUM have no effect. */
+
+#ifdef CONFIG_RTW_REDUCE_MEM
+/* #define REDUCE_MEM_LV1 */ /* 4.8M */
+/* #define REDUCE_MEM_LV2 */ /* 4M */
+/* #define REDUCE_MEM_LV3 */ /* 7.5M */
+
+#ifdef REDUCE_MEM_LV1
+#undef CORE_RXBUF_NUM
+#define CORE_RXBUF_NUM 448
+#define CORE_RXBUF_SIZE 4096
+#define MAX_ASMDU_LEN 0
+#define NR_XMITFRAME            64
+#define MAX_TX_RING_NUM         64
+#elif defined (REDUCE_MEM_LV2)
+#undef CORE_RXBUF_NUM
+#define CORE_RXBUF_NUM 480
+#define CORE_RXBUF_SIZE 4096
+#define MAX_ASMDU_LEN 0
+#define NR_XMITFRAME            64
+#define MAX_TX_RING_NUM         64
+#undef CONFIG_TX_WD_NUM
+#define CONFIG_TX_WD_NUM	64
+#elif defined (REDUCE_MEM_LV3)
+#undef CORE_RXBUF_NUM
+#define CORE_RXBUF_NUM 576
+#define CORE_RXBUF_SIZE 8192
+#define MAX_ASMDU_LEN 1
+#define NR_XMITFRAME            64
+#define MAX_TX_RING_NUM         64
+#else
+#ifdef PLAT_RXBUF_NUM
+#define CORE_RXBUF_NUM PLAT_RXBUF_NUM
+#else
+#define CORE_RXBUF_NUM 1024
+#endif
+#define CORE_RXBUF_SIZE 8192
+#define MAX_ASMDU_LEN 1
+/* HT -   0: 3839, 1: 7935  octets - Maximum A-MSDU Length
+ * VHT - 0: 3895, 1: 7991, 2:11454  octets - Maximum MPDU Length
+ */
+#ifdef PLAT_NR_XMITFRAME
+#define NR_XMITFRAME		PLAT_NR_XMITFRAME
+#else
+#define NR_XMITFRAME		512
+#endif
+#ifdef PLAT_MAX_TX_RING_NUM
+#define MAX_TX_RING_NUM		PLAT_MAX_TX_RING_NUM
+#else
+#define MAX_TX_RING_NUM		512
+#endif
+#endif
+
+#define CORE_RPBUF_SIZE 192 /* 192: up to 42 agg num */
+#define CORE_RPBD_NUM 64
+#define CORE_RPBUF_NUM (CORE_RPBD_NUM + 32)
+
+#define RTW_MAX_FRAG_NUM	1
+
+/* Tx WD use continuous memory pool */
+#define RTW_WD_PAGE_USE_SHMEM_POOL
+
+#define CONFIG_FW_SPECIFY_FROM_CORE
+#ifdef CONFIG_FW_SPECIFY_FROM_CORE
+	#define MAC_FW_8852B_U2
+	#define MAC_FW_8852B_U3
+	/* #define MAC_FW_CATEGORY_NIC */	/* with pwr gating */
+	#define MAC_FW_CATEGORY_NICCE		/* with clock gating */
+	/* #define MAC_FW_CATEGORY_NIC_PLE */
+	#ifdef CONFIG_WOWLAN
+	#define MAC_FW_CATEGORY_WOWLAN
+	#endif /* CONFIG_WOWLAN */
+#endif
+
+#else /* !CONFIG_RTW_REDUCE_MEM */
+
+#define CORE_RXBUF_SIZE 11460
+#define CORE_RXBUF_NUM 512
+#define CORE_RPBUF_SIZE 11460
+#define CORE_RPBD_NUM 256
+#define CORE_RPBUF_NUM 1024
+
+#endif /* CONFIG_RTW_REDUCE_MEM */
 
 /*
  * Wi-Fi Functions Config
@@ -119,46 +231,50 @@
 #endif
 /*#define CONFIG_FILE_FWIMG*/
 
-/* #define CONFIG_XMIT_ACK */
+#define CONFIG_XMIT_ACK
 #ifdef CONFIG_XMIT_ACK
+	#define CONFIG_XMIT_ACK_BY_REL_RPT
+	/*#define CONFIG_XMIT_ACK_BY_REL_RPT_DBG*/
 	#define CONFIG_ACTIVE_KEEP_ALIVE_CHECK
+	#define RTW_WKARD_TX_NULL_WD_RP
 #endif
 
 #define BUF_DESC_ARCH		/* if defined, hardware follows Rx buffer descriptor architecture */
 
-#ifdef CONFIG_POWER_SAVING
-
-	#define CONFIG_IPS
-	#ifdef CONFIG_IPS
-	#endif
-
-	#define CONFIG_LPS
-
-	#if defined(CONFIG_LPS)
-		/*#define CONFIG_LPS_LCLK*/ /* 32K */
-	#endif
-
-	#ifdef CONFIG_LPS_LCLK
-		#define CONFIG_XMIT_THREAD_MODE
-		#define LPS_RPWM_WAIT_MS 300
-	#endif
-#endif
-
 #ifdef CONFIG_POWER_SAVE
 	/* #define CONFIG_RTW_IPS */
-	/* #define CONFIG_RTW_LPS */
-
-	#ifdef CONFIG_RTW_LPS
-		#define CONFIG_RTW_LPS_RFOFF
+	#define CONFIG_RTW_LPS
+	#ifdef CONFIG_RTW_IPS
+		#define CONFIG_FWIPS
 	#endif
-
 	#if defined(CONFIG_RTW_IPS) || defined(CONFIG_RTW_LPS)
 		#define CONFIG_PS_FW_DBG
 	#endif
-#endif
+	#ifdef CONFIG_WOWLAN
+		#define CONFIG_RTW_IPS_WOW
+		#ifdef CONFIG_RTW_IPS_WOW
+			#define CONFIG_FWIPS_WOW
+		#endif /* CONFIG_RTW_IPS_WOW */
+		#define CONFIG_RTW_LPS_WOW
+	#endif /* CONFIG_WOWLAN */
+	#ifdef CONFIG_RTW_LPS
+	#define CONFIG_RTW_LPS_DEFAULT_OFF
+	#endif
+	/* #define CONFIG_HW_RADIO_ONOFF_DETECT */
+#endif /* CONFIG_POWER_SAVE */
+
+#ifdef CONFIG_WOWLAN
+	#define CONFIG_GTK_OL
+	/* #define CONFIG_ARP_KEEP_ALIVE */
+#endif /* CONFIG_WOWLAN */
 
 	/*#define CONFIG_ANTENNA_DIVERSITY*/
 
+#ifdef CONFIG_GPIO_WAKEUP
+	#ifndef WAKEUP_GPIO_IDX
+		#define WAKEUP_GPIO_IDX	12	/* WIFI Chip Side */
+	#endif /*!WAKEUP_GPIO_IDX*/
+#endif /* CONFIG_GPIO_WAKEUP */
 
 /*#define CONFIG_PCI_ASPM*/
 #ifdef CONFIG_PCI_ASPM
@@ -171,6 +287,7 @@
 	#ifndef CONFIG_NATIVEAP_MLME
 		#define CONFIG_HOSTAPD_MLME
 	#endif
+	/*#define CONFIG_RTW_HOSTAPD_ACS*/
 	/*#define CONFIG_FIND_BEST_CHANNEL*/
 	/*#define CONFIG_AUTO_AP_MODE*/
 #endif
@@ -201,7 +318,12 @@
 	#define CONFIG_TDLS_AUTOSETUP
 #endif
 	#define CONFIG_TDLS_AUTOCHECKALIVE
-	/* #define CONFIG_TDLS_CH_SW */	/* Enable this flag only when we confirm that TDLS CH SW is supported in FW */
+	/*
+	 * Enable "CONFIG_TDLS_CH_SW" by default,
+	 * however limit it to only work in wifi logo test mode
+	 * but not in normal mode currently
+	 */
+	#define CONFIG_TDLS_CH_SW
 #endif
 
 #define CONFIG_SKB_COPY	/* for amsdu */
@@ -229,15 +351,19 @@
 /*
  * Software feature Related Config
  */
-
 #define CONFIG_SCAN_BACKOP_STA
-#define CONFIG_RTW_REDUCE_MEM
+
+/* #define CONFIG_RTW_CSI_CHANNEL_INFO */
+#ifdef CONFIG_RTW_CSI_CHANNEL_INFO
+#define CONFIG_RTW_CSI_NETLINK
+#define CONFIG_CSI_TIMER_POLLING
+#endif
 
 /*
  * Interface  Related Config
  */
-
 /* #define CONFIG_RTW_FORCE_PCI_MSI_DISABLE */
+/* #define CONFIG_64BIT_DMA */
 
 /*
  * HAL  Related Config
@@ -313,20 +439,63 @@
 #define CONFIG_DBG_COUNTER
 #define	DBG_RX_DFRAME_RAW_DATA
 /*#define	DBG_TXBD_DESC_DUMP*/
-#define CONFIG_RTW_EFUSE_DBG_DUMP	1
 
 #define CONFIG_PCI_BCN_POLLING
 //#define RTW_PHL_TEST_FPGA //For 8852A PCIE FPGA TEST
 
-/* #define CONFIG_DMA_USE_COHERENT_MEM */
+#define CONFIG_RTW_NORMAL_DMA
+/* #define CONFIG_RTW_SECURE_DMA */
+/* #define CONFIG_RTW_SWIOTLB_DMA */
 
-#ifdef CONFIG_DMA_USE_COHERENT_MEM
-/*#define CONFIG_DMA_TX_USE_COHERENT_MEM*/
-#define CONFIG_DMA_RX_USE_COHERENT_MEM
+#if defined(CONFIG_RTW_SECURE_DMA) || defined(CONFIG_RTW_SWIOTLB_DMA)
+#undef CONFIG_RTW_NORMAL_DMA
+#endif
+
+#ifdef CONFIG_RTW_NORMAL_DMA
+	/* #define CONFIG_TX_REQ_NONCACHE_ADDR */
+	#define CONFIG_TXBD_NONCACHE_ADDR
+	#define CONFIG_TX_PKT_NONCACHE_ADDR
+	/* #define CONFIG_RX_BUFF_NONCACHE_ADDR */
+	#define CONFIG_RXBD_NONCACHE_ADDR
+	/* #define CONFIG_WD_PAGE_NONCACHE_ADDR */
+	/* #define CONFIG_WD_WORK_RING_NONCACHE_ADDR */
+	/* #define CONFIG_H2C_NONCACHE_ADDR */
+#elif defined (CONFIG_RTW_SECURE_DMA)
+	#define CONFIG_TX_REQ_NONCACHE_ADDR
+	#define CONFIG_TXBD_NONCACHE_ADDR
+	#define CONFIG_TX_PKT_NONCACHE_ADDR
+	#define CONFIG_RX_BUFF_NONCACHE_ADDR
+	#define CONFIG_RXBD_NONCACHE_ADDR
+	#define CONFIG_WD_PAGE_NONCACHE_ADDR
+	#define CONFIG_WD_WORK_RING_NONCACHE_ADDR
+	#define CONFIG_H2C_NONCACHE_ADDR
+#elif defined (CONFIG_RTW_SWIOTLB_DMA)
+	/* #define CONFIG_TX_REQ_NONCACHE_ADDR */
+	/* #define CONFIG_TXBD_NONCACHE_ADDR */
+	/* #define CONFIG_TX_PKT_NONCACHE_ADDR */
+	/* #define CONFIG_RX_BUFF_NONCACHE_ADDR */
+	/* #define CONFIG_RXBD_NONCACHE_ADDR */
+	/* #define CONFIG_WD_PAGE_NONCACHE_ADDR */
+	#define CONFIG_WD_WORK_RING_NONCACHE_ADDR
+	#define CONFIG_H2C_NONCACHE_ADDR
 #else
-#ifndef CONFIG_DIS_DYN_RXBUF
+#error "Wrong DMA mode"
+#endif
+
+#if !defined(CONFIG_DIS_DYN_RXBUF) && !defined(CONFIG_RX_BUFF_NONCACHE_ADDR)
 #define CONFIG_DYNAMIC_RX_BUF
 #endif
+
+#if defined(CONFIG_DIS_DYN_RXBUF) && !defined(CONFIG_RX_BUFF_NONCACHE_ADDR)
+#define CONFIG_RTW_RXSKB_KMALOC
+#endif
+
+#ifndef CONFIG_WD_PAGE_NONCACHE_ADDR
+#define RTW_WD_PAGE_USE_SHMEM_POOL
+#endif
+
+#ifdef CONFIG_RTW_SECURE_DMA
+/* #define CONFIG_RTW_DEDICATED_CMA_POOL */
 #endif
 
 /*#define CONFIG_RTW_BTM_ROAM*/
@@ -341,16 +510,49 @@
 	#endif
 #endif /* CONFIG_RTW_MBO */
 
+/* TRx Thread mode setting */
+/* #define CONFIG_RTW_TX_HDL_USE_THREAD */
+/* #define CONFIG_RTW_RX_HDL_USE_THREAD */
+/* #define CONFIG_RTW_RX_EVENT_USE_THREAD */
+
 /* Separate TRX path into different CPUs */
-/*#define CONFIG_PHL_CPU_BALANCE*/
-#ifdef CONFIG_PHL_CPU_BALANCE
+/* Note: if CPU balance is enabled, thread mode setting will be invalid.*/
+/*#define CONFIG_CPU_BALANCE*/
+#ifdef CONFIG_CPU_BALANCE
+	#define CONFIG_RTW_TX_HDL_USE_WQ        /* TX Handler Workqueue */
+	/*#define CONFIG_RTW_TX_AMSDU_USE_WQ*/  /* TX AMSDU Handler Workqueue */
+	/*#define CONFIG_RTW_RX_HDL_USE_WQ*/    /* RX Handler Workqueue */
+	/*#define CONFIG_RTW_EVENT_HDL_USE_WQ*/ /* EVENT Handler Workqueue */
 
-#define CONFIG_PHL_CPU_BALANCE_TX
-#define CPU_ID_TX_PHL_0 1
+	/*#define CONFIG_CPU_SPECIFIC*/
+	#ifdef CONFIG_CPU_SPECIFIC /* Specific CPU */
+		#define CPU_ID_TX_HDL 1    /* bound to CPU1 */
+		#define CPU_ID_TX_AMSDU 3  /* bound to CPU3 */
+		#define CPU_ID_RX_HDL 0    /* bound to CPU0 */
+		#define CPU_ID_EVENT_HDL 2 /* bound to CPU2 */
+	#else /* not bound to any CPU, prefer the local CPU */
+		#define CPU_ID_TX_HDL WORK_CPU_UNBOUND
+		#define CPU_ID_TX_AMSDU WORK_CPU_UNBOUND
+		#define CPU_ID_RX_HDL WORK_CPU_UNBOUND
+		#define CPU_ID_EVENT_HDL WORK_CPU_UNBOUND
+	#endif
+#endif
 
-/*#define CONFIG_PHL_CPU_BALANCE_RX*/
-#define CPU_ID_RX_CORE_0 2
+/* Use workqueue highpri to handle phl_handler */
+/*#define CONFIG_PHL_HANDLER_WQ_HIGHPRI*/
+#ifdef CONFIG_CPU_BALANCE
+#undef CONFIG_PHL_HANDLER_WQ_HIGHPRI
+#endif
 
+/* Alignment to improve memcpy efficiency */
+/*#define CONFIG_RTW_RX_SKB_DATA_ALIGNMENT*/
+
+/* NEON mode to improve performance */
+#if defined(CONFIG_RTW_RX_SKB_DATA_ALIGNMENT) && defined(CONFIG_CPU_BALANCE)
+/*#define CONFIG_RTW_NEON_MODE*/
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 12, 0))
+#undef CONFIG_RTW_NEON_MODE
+#endif
 #endif
 
 #ifdef RTW_PHL_TEST_FPGA

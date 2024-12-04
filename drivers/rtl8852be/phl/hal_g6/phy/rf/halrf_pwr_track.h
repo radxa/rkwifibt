@@ -19,22 +19,35 @@
 #define AVG_THERMAL_NUM 8
 #define MAX_RF_PATH 4
 #define DELTA_SWINGIDX_SIZE 30
-#define BAND_NUM 3
+#define BAND_NUM 4
+#define BAND_NUM_6G 4
 #define DELTA_SWINTSSI_SIZE 61
-#define TSSI_EFUSE_RATE 2
-#define TSSI_EFUSE_NUM 19
+#define TSSI_EFUSE_NUM 32
+#define TSSI_BW_DIFF_EFUSE_NUM 14
 #define TSSI_HIDE_EFUSE_NUM 8
+#define TSSI_HIDE_EFUSE_NUM_6G 8
 #define AVG_THERMAL_NUM_TSSI 2
 #define MAX_CH_NUM 67
 #define TSSI_ALIMK_VAULE_NUM 8
 
 #define MAX_HALRF_PATH 2
 
+#define TSSI_EXTRA_GROUP_BIT (BIT(31))
+#define TSSI_EXTRA_GROUP(idx) (TSSI_EXTRA_GROUP_BIT | (idx))
+#define IS_TSSI_EXTRA_GROUP(group) ((group) & TSSI_EXTRA_GROUP_BIT)
+#define TSSI_EXTRA_GET_GROUP_IDX1(group) ((group) & ~TSSI_EXTRA_GROUP_BIT)
+#define TSSI_EXTRA_GET_GROUP_IDX2(group) (TSSI_EXTRA_GET_GROUP_IDX1(group) + 1)
+
 /*@---------------------------End Define Parameters---------------------------*/
+
+
+u8 halrf_get_limit_ch_idx_to_ch_idx(struct rf_info *rf, u8 band, u8 channel);
 
 enum halrf_tssi_rate_type {
 	EFUSE_TSSI_CCK = 0,
-	EFUSE_TSSI_MCS
+	EFUSE_TSSI_MCS,
+	EFUSE_TSSI_6G,
+	EFUSE_TSSI_RATE_MAX
 };
 
 enum halrf_tssi_type{
@@ -43,12 +56,22 @@ enum halrf_tssi_type{
 	TSSI_CAL
 };
 
+enum halrf_tssi_slope_type{
+	TSSI_SLOPE_DEFAULT = 0,
+	TSSI_SLOPE_ON,
+	TSSI_SLOPE_OFF
+};
+
 enum halrf_tssi_alimk_band{
 	TSSI_ALIMK_2G = 0,
 	TSSI_ALIMK_5GL,
 	TSSI_ALIMK_5GM,
 	TSSI_ALIMK_5GH,
 	TSSI_ALIMK_MAX
+};
+
+enum halrf_tssi_dz {
+	DZ_TSSI_ALIMTK_TIMEOUT	= BIT(0),
 };
 
 struct halrf_pwr_track_info {
@@ -118,6 +141,14 @@ struct halrf_pwr_track_info {
 	s8  delta_swing_table_idx_5gc_n[BAND_NUM][DELTA_SWINGIDX_SIZE];
 	s8  delta_swing_table_idx_5gd_p[BAND_NUM][DELTA_SWINGIDX_SIZE];
 	s8  delta_swing_table_idx_5gd_n[BAND_NUM][DELTA_SWINGIDX_SIZE];
+	s8 delta_swing_table_idx_6ga_p[BAND_NUM_6G][DELTA_SWINGIDX_SIZE];
+	s8 delta_swing_table_idx_6ga_n[BAND_NUM_6G][DELTA_SWINGIDX_SIZE];
+	s8 delta_swing_table_idx_6gb_p[BAND_NUM_6G][DELTA_SWINGIDX_SIZE];
+	s8 delta_swing_table_idx_6gb_n[BAND_NUM_6G][DELTA_SWINGIDX_SIZE];
+	s8 delta_swing_table_idx_6gc_p[BAND_NUM_6G][DELTA_SWINGIDX_SIZE];
+	s8 delta_swing_table_idx_6gc_n[BAND_NUM_6G][DELTA_SWINGIDX_SIZE];
+	s8 delta_swing_table_idx_6gd_p[BAND_NUM_6G][DELTA_SWINGIDX_SIZE];
+	s8 delta_swing_table_idx_6gd_n[BAND_NUM_6G][DELTA_SWINGIDX_SIZE];
 	s8  delta_swing_tssi_table_2g_cck_a[DELTA_SWINTSSI_SIZE];
 	s8  delta_swing_tssi_table_2g_cck_b[DELTA_SWINTSSI_SIZE];
 	s8  delta_swing_tssi_table_2g_cck_c[DELTA_SWINTSSI_SIZE];
@@ -169,15 +200,30 @@ struct halrf_tssi_info{
 	u8 thermal[MAX_HALRF_PATH];
 	u8 do_tssi_thermal[MAX_HALRF_PATH];
 	s32 tssi_de[MAX_HALRF_PATH];
-	u8 tssi_type;
-	s8 tssi_efuse[MAX_HALRF_PATH][TSSI_EFUSE_RATE][TSSI_EFUSE_NUM];
+	u8 tssi_type[MAX_HALRF_PATH];
+	s8 tssi_efuse[MAX_HALRF_PATH][EFUSE_TSSI_RATE_MAX][TSSI_EFUSE_NUM];
+	s8 tssi_bw_diff_efuse[MAX_HALRF_PATH][EFUSE_TSSI_RATE_MAX][CHANNEL_WIDTH_MAX][TSSI_BW_DIFF_EFUSE_NUM];
+	s8 tssi_efuse_slope_gain_diff[MAX_HALRF_PATH][EFUSE_TSSI_RATE_MAX][TSSI_EFUSE_NUM];
+	s8 tssi_efuse_slope_cw_diff[MAX_HALRF_PATH][EFUSE_TSSI_RATE_MAX][TSSI_EFUSE_NUM];
+	bool tssi_slope_no_pg;
 	s8 tssi_trim[MAX_HALRF_PATH][TSSI_HIDE_EFUSE_NUM];
+	s8 tssi_trim_6g[MAX_HALRF_PATH][TSSI_HIDE_EFUSE_NUM_6G];
 	s32 tssi_xdbm;
 	s8 curr_tssi_cck_de[MAX_HALRF_PATH];
 	s8 curr_tssi_efuse_cck_de[MAX_HALRF_PATH];
 	s8 curr_tssi_ofdm_de[MAX_HALRF_PATH];
+	s8 curr_tssi_ofdm_de_20m[MAX_HALRF_PATH];
+	s8 curr_tssi_ofdm_de_80m[MAX_HALRF_PATH];
+	s8 curr_tssi_ofdm_de_160m[MAX_HALRF_PATH];
 	s8 curr_tssi_efuse_ofdm_de[MAX_HALRF_PATH];
+	s8 curr_tssi_ofdm_de_diff_20m[MAX_HALRF_PATH];
+	s8 curr_tssi_ofdm_de_diff_80m[MAX_HALRF_PATH];
+	s8 curr_tssi_ofdm_de_diff_160m[MAX_HALRF_PATH];
 	s8 curr_tssi_trim_de[MAX_HALRF_PATH];
+	s8 tssi_de_160m_adc_wa_20m;
+	s8 tssi_de_160m_adc_wa_40m;
+	s8 tssi_de_160m_adc_wa_80m;
+	s8 tssi_de_160m_adc_wa_160m;
 	bool do_tssi;
 	bool base_thermal_check[MAX_HALRF_PATH];
 	u32 base_thermal[MAX_HALRF_PATH];
@@ -201,9 +247,15 @@ struct halrf_tssi_info{
 	u32 backup_txagc_offset[MAX_HALRF_PATH][MAX_CH_NUM];
 	u8 backup_txagc_oft_ther[MAX_HALRF_PATH][MAX_CH_NUM];
 	bool check_backup_txagc[MAX_CH_NUM];
+	bool check_backup_aligmk[MAX_HALRF_PATH][MAX_CH_NUM];
 	u32 start_time, finish_time;
 	u32 alignment_value[MAX_HALRF_PATH][TSSI_ALIMK_MAX][TSSI_ALIMK_VAULE_NUM];
+	u32 alignment_backup_by_ch[MAX_HALRF_PATH][MAX_CH_NUM][TSSI_ALIMK_VAULE_NUM];
 	bool alignment_done[MAX_HALRF_PATH][TSSI_ALIMK_MAX];
+	u32 tssi_total_time;
+	u32 tssi_alimk_time;
+	u32 tssi_slope_time;
+	s32 slopek_cw_diff[MAX_HALRF_PATH];
 };
 
 struct halrf_xtal_info{

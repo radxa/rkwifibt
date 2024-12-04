@@ -15,10 +15,25 @@
 #ifndef _PHL_ACS_H_
 #define _PHL_ACS_H_
 
-/* avoid clm/nhm result not ready when scan done */
-#define MONITOR_TIME_TOLERANCE 15
+/* environment monitor time should be smaller than scan duration time */
+#define ACS_ENV_MNTR_TIME(time) ((time) * 8 / 10)
 
-void phl_acs_mntr_trigger(struct phl_info_t *phl_info, u8 ch_idx, u16 channel, u16 monitor_time);
-void phl_acs_mntr_result(struct phl_info_t *phl_info);
+struct phl_acs_parm {
+	u8 idx; /* idx of phl_acs_chnl_tbl */
+	u16 monitor_time;
+	bool nhm_include_cca;
+};
+
+struct phl_acs_info {
+	struct acs_mntr_rpt rpt[MAX_ACS_INFO];
+};
+
+void phl_acs_mntr_trigger(struct phl_info_t *phl_i, enum phl_band_idx band_idx,
+				struct phl_acs_parm *parm);
+
+void phl_acs_mntr_result(struct phl_info_t *phl_info,
+			enum phl_band_idx band_idx, struct phl_acs_parm *parm);
+enum rtw_phl_status phl_acs_info_init(struct phl_info_t *phl_info);
+void phl_acs_info_deinit(struct phl_info_t *phl_info);
 
 #endif /*_PHL_ACS_H_*/

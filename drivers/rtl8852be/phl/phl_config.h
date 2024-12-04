@@ -1,6 +1,6 @@
 /******************************************************************************
  *
- * Copyright(c) 2019 - 2021 Realtek Corporation.
+ * Copyright(c) 2019 - 2023 Realtek Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of version 2 of the GNU General Public License as
@@ -18,7 +18,7 @@
 /* Define correspoding PHL Feature based on information from the Core */
 #ifdef PHL_PLATFORM_AP
 #define PHL_FEATURE_AP
-#elif defined(PHL_PLATFORM_LINUX) || defined(PHL_PLATFORM_WINDOWS)
+#elif defined(PHL_PLATFORM_LINUX) || defined(PHL_PLATFORM_WINDOWS) || defined(PHL_PLATFORM_UEFI)
 #define PHL_FEATURE_NIC
 #else
 #define PHL_FEATURE_NONE
@@ -27,9 +27,11 @@
 /******************* PLATFORM Section **************************/
 #ifdef PHL_FEATURE_NONE/* enable compile flag for phl only compilation check */
 	#define CONFIG_DFS 1
-	#define CONFIG_USB_TX_AGGREGATION
-	#define CONFIG_USB_RX_AGGREGATION
-	#define CONFIG_USB_TX_PADDING_CHK
+	#ifdef CONFIG_USB_HCI
+		#define CONFIG_USB_TX_AGGREGATION
+		#define CONFIG_USB_RX_AGGREGATION
+		#define CONFIG_USB_TX_PADDING_CHK
+	#endif
 	#define CONFIG_LOAD_PHY_PARA_FROM_FILE
 
 	#define CONFIG_WOW
@@ -38,22 +40,26 @@
 
 	#define CONFIG_MR_SUPPORT
 	#ifdef CONFIG_MR_SUPPORT
-		#define CONFIG_SCC_SUPPORT
-		#define CONFIG_MCC_SUPPORT
-		#ifdef CONFIG_MCC_SUPPORT
-			#define MCC_ROLE_NUM 2
-			#define RTW_WKARD_GO_BT_TS_ADJUST_VIA_NOA
-			#define RTW_WKARD_HALRF_MCC
-			#define RTW_WKARD_TDMRA_AUTO_GET_STAY_ROLE
-		#endif /*CONFIG_MCC_SUPPORT*/
-
+		#if !defined(PHL_PLATFORM_LINUX_FREESTANDING)
 		#define CONFIG_DBCC_SUPPORT
-
+		#endif
 		#define DBG_PHL_CHAN
 		#define DBG_PHL_MR
 		#define PHL_MR_PROC_CMD
 		#define DBG_CHCTX_RMAP
 	#endif /*CONFIG_MR_SUPPORT*/
+#if defined(CONFIG_MR_SUPPORT) || defined(CONFIG_BTCOEX)
+	#define CONFIG_MR_COEX_SUPPORT
+#endif /* CONFIG_MR_SUPPORT || CONFIG_BTCOEX */
+#ifdef CONFIG_MR_COEX_SUPPORT
+	#define CONFIG_MCC_SUPPORT
+	#ifdef CONFIG_MCC_SUPPORT
+		#define MCC_ROLE_NUM 2
+		#define RTW_WKARD_GO_BT_TS_ADJUST_VIA_NOA
+		#define RTW_WKARD_HALRF_MCC
+		#define RTW_WKARD_TDMRA_AUTO_GET_STAY_ROLE
+	#endif /*CONFIG_MCC_SUPPORT*/
+#endif/* CONFIG_MR_COEX_SUPPORT */
 
 	#define DBG_PHL_MAC_REG_RW
 
@@ -61,6 +67,9 @@
 	#define CONFIG_RX_PSTS_PER_PKT
 
 	#define CONFIG_PHL_TXSC
+	#define CONFIG_RTW_TXSC_USE_HW_SEQ
+	#define DEBUG_PHL_TX
+	#define PHL_RXSC_AMPDU
 	#define RTW_PHL_BCN
 	#define CONFIG_PHL_SDIO_RX_NETBUF_ALLOC_IN_PHL
 	#define CONFIG_PHL_TWT
@@ -71,28 +80,67 @@
 		#define CONFIG_PHL_CMD_SCAN
 		#define CONFIG_PHL_CMD_SER
 		#define CONFIG_PHL_CMD_BTC
+		#define CONFIG_PHL_CMD_BF
 	#endif
 	#ifdef CONFIG_PCI_HCI
 		#define PCIE_TRX_MIT_EN
+		#define PHL_RXSC_ISR
+		#define CONFIG_RTW_MULTI_DEV_MULTI_BAND
 	#endif
+	#define DEBUG_PHL_RX
 	#define CONFIG_PHL_P2PPS
-	#define CONFIG_6GHZ
 	#define RTW_WKARD_BFEE_SET_AID
 	#define CONFIG_PHL_THERMAL_PROTECT
 	#define CONFIG_PHL_TX_DBG
+	#define CONFIG_PHL_SNIFFER_SUPPORT
 	#define CONFIG_PHL_RELEASE_RPT_ENABLE
+	#define PHL_WATCHDOG_REFINE
+	#define CONFIG_PHL_DRV_HAS_NVM
+	#define CONFIG_RTW_OS_HANDLER_EXT
+	#define CONFIG_RTW_DEBUG_BCN_TX
+	#define CONFIG_RTW_SUPPORT_MBSSID_VAP
+	#define CONFIG_LIMITED_VAP_NUM (3)
+	#define CONFIG_PHL_FW_DUMP_EFUSE
+	#define CONFIG_PHL_CHANNEL_INFO
+	#ifdef CONFIG_PHL_CHANNEL_INFO
+		#define CONFIG_PHL_WKARD_CHANNEL_INFO_ACK
+	#endif
+	#define CONFIG_PHL_NAN
+	#define CONFIG_PHL_DIAGNOSE
 #endif /* PHL_FEATURE_NONE */
 
 #ifdef PHL_PLATFORM_WINDOWS
-	#ifndef CONFIG_FSM
-		#define CONFIG_FSM
-	#endif
 	#ifndef CONFIG_CMD_DISP
 		#define CONFIG_CMD_DISP
 	#endif
+	#define DRV_BB_CNSL_CMN_INFO
+	#define CONFIG_SMART_ANTENNA
+	#ifndef RTW_WD_PAGE_USE_SHMEM_POOL
+		#define RTW_WD_PAGE_USE_SHMEM_POOL
+	#endif
+
+	#ifdef CONFIG_POWER_SAVE
+	#define CONFIG_HW_RADIO_ONOFF_DETECT
+	#endif
+	#define DBG_DUMP_CMAC_CFG_INFO
+	#define CONFIG_BTCOEX
 #endif
 
 #ifdef PHL_PLATFORM_LINUX
+#ifdef CONFIG_PCI_HCI
+/* Driver needs to handle cache-memory coherence for DMA */
+#ifndef CONFIG_RTW_DMA_IS_COHERENT
+#define PHL_DMA_NONCOHERENT
+#endif
+/* DMA is IOMMU. map/unmap must be paired, including size */
+#ifdef CONFIG_RTW_UNPAIRED_DMA_MAP_UNMAP
+#define PHL_UNPAIRED_DMA_MAP_UNMAP
+#endif
+/* DMA address is 64-bit */
+#ifdef CONFIG_ARCH_DMA_ADDR_T_64BIT
+#define PHL_DMA_ADDR_64
+#endif
+#endif /* CONFIG_PCI_HCI */
 	/* comment out cfg temporarily */
 	/*
 	#define CONFIG_FSM
@@ -101,9 +149,21 @@
 		#define CONFIG_CMD_DISP
 	#endif
 	*/
+	#define CONFIG_BTCOEX
+	#define DEBUG_PHL_RX
+#endif
+
+#ifdef PHL_PLATFORM_UEFI
+	#ifndef CONFIG_CMD_DISP
+		#define CONFIG_CMD_DISP
+	#endif
+
+	#define RTW_WKARD_REDUCE_GET_TIME_USAGE
+	#define CONFIG_RX_PSTS_PER_PKT
 #endif
 
 /******************* Feature flags **************************/
+#define MAC_PHL_TEMP_CROSS_DEFINE
 
 #ifdef CONFIG_PHL_TEST_SUITE
 #define CONFIG_PHL_TEST_MP
@@ -114,12 +174,19 @@
 #define CONFIG_SYNC_INTERRUPT
 #endif
 
+/* #define CONFIG_PHL_IO_OFLD */
+#define CONFIG_PHL_SCANOFLD
+#define CONFIG_PHL_CHSWOFLD
+
 #ifdef CONFIG_WOW
 #define CONFIG_WOWLAN
 /* #define RTW_WKARD_WOW_SKIP_AOAC_RPT */
 /* #define RTW_WKARD_WOW_SKIP_WOW_CAM_CONFIG */
 #define RTW_WKARD_WOW_L2_PWR
 #define DBG_RST_BDRAM_TIME
+#ifndef CONFIG_PHL_SCANOFLD
+#define CONFIG_PHL_SCANOFLD
+#endif
 #endif
 
 #define DBG_PHY_ON_TIME
@@ -131,6 +198,12 @@
 #define MAX_WIFI_ROLE_NUMBER 5
 #endif
 
+#if defined(CONFIG_RTW_SUPPORT_MBSSID_VAP) && defined(CONFIG_LIMITED_VAP_NUM)
+#define MAX_MBSSID_NUMBER       (CONFIG_LIMITED_VAP_NUM)
+#else
+#define MAX_MBSSID_NUMBER       (0)
+#endif /* CONFIG_RTW_SUPPORT_MBSSID_VAP */
+
 #ifdef CONFIG_CONCURRENT_MODE
 #define CONFIG_MR_SUPPORT
 #endif
@@ -140,24 +213,35 @@
 #endif
 
 #ifdef CONFIG_MR_SUPPORT
-#define CONFIG_SCC_SUPPORT
-#define CONFIG_MCC_SUPPORT
-#ifdef CONFIG_MCC_SUPPORT
-#define MCC_ROLE_NUM 2
-#define RTW_WKARD_GO_BT_TS_ADJUST_VIA_NOA
-#define RTW_WKARD_HALRF_MCC
-#define RTW_WKARD_TDMRA_AUTO_GET_STAY_ROLE
-#endif /*CONFIG_MCC_SUPPORT*/
-/*#define CONFIG_DBCC_SUPPORT*/
-
-#define DBG_PHL_CHAN
-#define DBG_PHL_MR
-#define PHL_MR_PROC_CMD
-#define DBG_CHCTX_RMAP
+	/*#define CONFIG_DBCC_SUPPORT*/
+	#ifdef CONFIG_DBCC_SUPPORT
+		/*#define DBG_DBCC_MONITOR_TIME*/
+		#ifdef DBG_DBCC_MONITOR_TIME
+			#define DBG_MONITOR_TIME
+		#endif
+	#endif
+	#define DBG_PHL_CHAN
+	#define DBG_PHL_MR
+	#define PHL_MR_PROC_CMD
+	#define DBG_CHCTX_RMAP
 #endif
+#if defined(CONFIG_MR_SUPPORT) || defined(CONFIG_BTCOEX)
+	#define CONFIG_MR_COEX_SUPPORT
+#endif /* CONFIG_MR_SUPPORT || CONFIG_BTCOEX */
+#ifdef CONFIG_MR_COEX_SUPPORT
+	#define CONFIG_MCC_SUPPORT
+	#ifdef CONFIG_MCC_SUPPORT
+		#define MCC_ROLE_NUM 2
+		#define RTW_WKARD_GO_BT_TS_ADJUST_VIA_NOA
+		#define RTW_WKARD_HALRF_MCC
+		#define RTW_WKARD_TDMRA_AUTO_GET_STAY_ROLE
+	#endif /*CONFIG_MCC_SUPPORT*/
+#endif /* CONFIG_MR_COEX_SUPPORT */
+
 
 #define DBG_PHL_STAINFO
 #define PHL_MAX_STA_NUM 128
+#define PHL_MAX_MLD_NUM (PHL_MAX_STA_NUM)
 
 /**** CONFIG_CMD_DISP ***/
 #ifdef DISABLE_CMD_DISPR
@@ -176,27 +260,27 @@
 */
 /*#define CONFIG_CMD_DISP_SUPPORT_CUSTOM_SEQ*/
 
-#ifndef CONFIG_FSM
-	#define CONFIG_SND_CMD
-#endif
-
 #define CONFIG_PHL_CMD_SCAN
 
 #ifdef CONFIG_CMD_SER
 #define CONFIG_PHL_CMD_SER
 #endif
 
-#define CONFIG_PHL_CMD_BTC
+#define CONFIG_PHL_CMD_BF
 
 #ifdef CONFIG_MSG_NUM
 	#define CONFIG_PHL_MSG_NUM CONFIG_MSG_NUM
 #endif
+
 #endif /**** CONFIG_CMD_DISP ***/
 
 #define CONFIG_GEN_GIT_INFO 1
 /*#define CONFIG_NEW_HALMAC_INTERFACE*/
 
-#define CONFIG_BTCOEX
+/* AP mode & UEFI not suppot BTC currently */
+#ifdef CONFIG_BTCOEX
+#define CONFIG_PHL_CMD_BTC
+#endif
 
 #ifdef CONFIG_USB_TX_PADDING_CHK
 #define CONFIG_PHL_USB_TX_PADDING_CHK
@@ -210,18 +294,19 @@
 #define CONFIG_PHL_USB_RX_AGGREGATION
 #endif
 
+#if CONFIG_DFS
+#define CONFIG_PHL_DFS_SWITCH_CH_WITH_CSA
 #ifdef CONFIG_DFS_MASTER
 #define CONFIG_PHL_DFS
 #endif
-
-#ifdef CONFIG_PHL_DFS
-/*#define CONFIG_PHL_DFS_REGD_FCC*/
-/*#define CONFIG_PHL_DFS_REGD_JAP*/
-#define CONFIG_PHL_DFS_REGD_ETSI
 #endif
 
 #ifdef CONFIG_WPP
 #define CONFIG_PHL_WPP
+#endif
+
+#ifdef CONFIG_TCP_CSUM_OFFLOAD_TX
+#define CONFIG_PHL_CSUM_OFFLOAD_TX
 #endif
 
 #ifdef CONFIG_TCP_CSUM_OFFLOAD_RX
@@ -230,7 +315,9 @@
 
 #ifdef CONFIG_RX_PSTS_PER_PKT
 #define CONFIG_PHL_RX_PSTS_PER_PKT
+#ifndef CONFIG_SNIFFER_SUPPORT
 #define RTW_WKARD_DISABLE_PSTS_PER_PKT_DATA
+#endif
 #endif
 
 #ifdef CONFIG_SDIO_RX_NETBUF_ALLOC_IN_PHL
@@ -252,6 +339,10 @@
 #define CONFIG_PHL_TWT
 #endif
 
+#ifdef CONFIG_NAN
+#define CONFIG_PHL_NAN
+#endif
+
 #ifdef CONFIG_RA_TXSTS_DBG
 #define CONFIG_PHL_RA_TXSTS_DBG
 #endif
@@ -266,6 +357,10 @@
 
 #ifdef CONFIG_P2PPS
 #define CONFIG_PHL_P2PPS
+#endif
+
+#ifdef CONFIG_WD_PAGE_RESET
+#define CONFIG_PHL_WD_PAGE_RESET
 #endif
 
 #ifdef CONFIG_TX_DBG
@@ -293,16 +388,80 @@
 #ifdef CONFIG_SDIO_TX_AGG_NUM_MAX
 #define PHL_SDIO_TX_AGG_MAX	CONFIG_SDIO_TX_AGG_NUM_MAX
 #endif /* CONFIG_SDIO_TX_AGG_NUM_MAX */
+#define CONFIG_PHL_SDIO_TX_CB_THREAD
+/*
+ * RTW_WKARD_SDIO_TX_USE_YIELD
+ * Define this would use yield() instead of event wait mechanism to improve
+ * throughput on Linux platform.
+ * But yield() doesn't been encouraged to use in Linux,
+ * so if we figure out what happened and find another way to improve
+ * throughput, this workaround would be removed later.
+ *
+ * RTW_WKARD_SDIO_TX_USE_YIELD is depended on CONFIG_PHL_SDIO_TX_CB_THREAD,
+ * because the mechanism only been used with CONFIG_PHL_SDIO_TX_CB_THREAD.
+ *
+ * Usually this flag would be defined from core layer.
+ */
+/*#define RTW_WKARD_SDIO_TX_USE_YIELD*/
 #define SDIO_TX_THREAD			/* Use dedicate thread for SDIO TX */
 /* For SDIO TX TP TST - ENDT */
+
+/* For SDIO RX TP TST - START */
+#define CONFIG_PHL_SDIO_RX_CB_THREAD
+/* For SDIO RX TP TST - END */
+
 #endif /* CONFIG_SDIO_HCI */
 
 #ifdef CONFIG_MAC_REG_RW_CHK
 #define DBG_PHL_MAC_REG_RW
 #endif
 
-#ifdef CONFIG_RTW_REDUCE_MEM
-#define CONFIG_PHL_REDUCE_MEM
+#ifdef CONFIG_RTW_DRV_HAS_NVM
+/* Driver has it's own NVM to store MP calibration values
+ * and system configuration instead of efuse. */
+#define CONFIG_PHL_DRV_HAS_NVM
+#endif /* CONFIG_RTW_DRV_HAS_NVM */
+
+#ifdef CONFIG_PCI_TRX_RES_DBG
+#define CONFIG_PHL_PCI_TRX_RES_DBG
+#endif
+
+#ifdef CONFIG_ACS
+#define CONFIG_RTW_ACS
+#endif
+
+#ifdef CONFIG_SNIFFER_SUPPORT
+#define CONFIG_PHL_SNIFFER_SUPPORT
+#endif
+#ifdef CONFIG_RTW_CSI_CHANNEL_INFO
+#define CONFIG_PHL_CHANNEL_INFO /*WiFi Sensing*/
+#ifdef CONFIG_PHL_CHANNEL_INFO
+	#define CONFIG_PHL_WKARD_CHANNEL_INFO_ACK
+	#define CONFIG_PHL_WKARD_CHANNEL_INFO_SAP
+#endif
+#define CONFIG_PHL_CHANNEL_INFO_DBG
+#endif
+
+#ifdef CONFIG_FW_DUMP_EFUSE
+#define CONFIG_PHL_FW_DUMP_EFUSE
+#endif
+
+#ifdef CONFIG_PHL_WACHDOG_REFINE
+#define PHL_WATCHDOG_REFINE
+#endif
+
+#ifdef DIAGNOSTIC_ANALYTICS
+#define CONFIG_PHL_DIAGNOSE
+#endif
+#ifdef CONFIG_NARROWBAND_SUPPORTING
+#define CONFIG_PHL_NARROW_BW
+#endif /*CONFIG_NARROWBAND_SUPPORTING*/
+
+/**** FPGA mode ****/
+/* #define FPGA_TEST */
+#ifdef FPGA_TEST
+#undef CONFIG_BTCOEX
+#undef USE_TRUE_PHY
 #endif
 
 /******************* WKARD flags **************************/
@@ -320,8 +479,13 @@
 #define RTW_WKARD_MP_MODE_CHANGE
 #define RTW_WKARD_WIN_TRX_BALANCE
 #define RTW_WKARD_DYNAMIC_LTR
-#define RTW_WKARD_GET_PROCESSOR_ID
 #endif
+
+#ifdef PHL_PLATFORM_AP
+#define RTW_WKARD_98D_INTR_EN_TIMING
+#define RTW_WKARD_AP_MP
+#endif
+
 
 #define RTW_WKARD_PHY_CAP
 
@@ -333,18 +497,20 @@
 
 #define RTW_WKARD_BB_C2H
 
-/*
- * One workaround of EFUSE operation
- *  1. Dump EFUSE with FW fail
- */
-#define RTW_WKARD_EFUSE_OPERATION
-
 #define RTW_WKARD_STA_BCN_INTERVAL
 
 #define RTW_WKARD_SER_L1_EXPIRE
 
+#define RTW_WKARD_RESET_LPS_STS
+
 #ifdef CONFIG_USB_HCI
 #define RTW_WKARD_SER_USB_POLLING_EVENT
+#endif
+
+#ifdef CONFIG_RX_BUFF_NONCACHE_ADDR
+#ifdef CONFIG_DYNAMIC_RX_BUF
+#undef CONFIG_DYNAMIC_RX_BUF
+#endif
 #endif
 
 /* #define RTW_WKARD_SER_USB_DISABLE_L1_RCVY_FLOW */
@@ -362,12 +528,6 @@
  * - This workaround will be removed once fw handles this cfg
  */
 /*#define RTW_WKARD_DEF_CMACTBL_CFG*/
-
-/* Workaround for efuse read hidden report
- * - Default is disabled until halmac is ready
- */
-
-#define RTW_WKARD_PRELOAD_TRX_RESET
 
 /* Workaround for cmac table config
  * - This workaround will be removed once fw handles this cfg
@@ -387,24 +547,13 @@
 #define RTW_WKARD_PHL_NTFY_MEDIA_STS
 #endif
 
-#ifdef RTW_WKARD_PHY_INFO_NTFY
-#define CONFIG_PHY_INFO_NTFY
-#endif
-
 #ifdef PHL_PLATFORM_WINDOWS
 #define CONFIG_WOW_WITH_SER
 #endif
 
 #ifdef PHL_PLATFORM_WINDOWS
-#define CONFIG_DBG_H2C_TX
+#define CONFIG_PHL_PATH_DIV
 #endif
-
-/*
- * Workaround for MRC bk module call phl_mr_offch_hdl with scan_issue_null_data
- * ops, this should be replaced with phl issue null data function.
- */
-#define RTW_WKARD_MRC_ISSUE_NULL_WITH_SCAN_OPS
-
 /*
  * Workaround for phl_mr_offch_hdl sleep after issue null data,
  * - This workaround will be removed once tx report is ready
@@ -416,19 +565,12 @@
 #define RTW_WKARD_PHL_LPS_IQK_TWICE
 #endif
 
-#ifdef RTW_WKARD_FSM_SCAN_PASSIVE_TO_ACTIVE
-#define RTW_WKARD_PHL_FSM_SCAN_PASSIVE_TO_ACTIVE
-#endif
-
 #define RTW_WKARD_BUSCAP_IN_HALSPEC
 
 #define RTW_WKARD_IBSS_SNIFFER_MODE
 
 
 #define RTW_WKARD_SINGLE_PATH_RSSI
-
-/* #define CONFIG_6GHZ */
-
 
 #define RTW_WKARD_BFEE_DISABLE_NG16
 
@@ -438,12 +580,28 @@
 #define RTW_WKARD_BFEE_SET_AID
 #endif
 
-#define RTW_WKARD_AP_CLIENT_ADD_DEL_NTY
+#ifdef RTW_WKARD_TRIGGER_FRAME_PARSER
+#define RTW_WKARD_RX_FLTR_HE_TF
+#endif
 
+#define RTW_WKARD_PHY_RPT_CCK_CH_IDX
 #ifdef RTW_WKARD_DISABLE_2G40M_ULOFDMA
 #define RTW_WKARD_BB_DISABLE_STA_2G40M_ULOFDMA
 #endif
 
-#define RTW_WKARD_CHECK_STAINFO_DOUBLE_DEL
+#define RTW_WKARD_WPOFFSET
+
+#ifdef PHL_PLATFORM_LINUX
+#define RTW_TX_COALESCE_BAK_PKT_LIST
+#endif
+
+#define RTW_WKARD_MU_PPDU_STS_RX_RATE
+
+#ifdef PHL_PLATFORM_WINDOWS
+#define CONFIG_DIG_TDMA
+#endif
+
+/* DCM might have some IOT issue, please see PCIE-9556 */
+#define RTW_WKARD_DISABLE_DCM
 
 #endif /*_PHL_CONFIG_H_*/

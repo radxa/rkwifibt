@@ -513,6 +513,7 @@ static int rm_issue_meas_req(struct rm_obj *prm)
 static int rm_state_idle(struct rm_obj *prm, enum RM_EV_ID evid)
 {
 	_adapter *padapter = prm->psta->padapter;
+	struct _ADAPTER_LINK *padapter_link = prm->psta->padapter_link;
 	u8 val8;
 	u32 val32;
 
@@ -539,7 +540,7 @@ static int rm_state_idle(struct rm_obj *prm, enum RM_EV_ID evid)
 				 * phydm measure current ch periodically
 				 * scan current ch is not necessary
 				 */
-				val8 = padapter->mlmeextpriv.chandef.chan;
+				val8 = padapter_link->mlmeextpriv.chandef.chan;
 				if (prm->q.ch_num == val8)
 					prm->poll_mode = 1;
 			}
@@ -741,7 +742,6 @@ static int rm_state_do_meas(struct rm_obj *prm, enum RM_EV_ID evid)
 		break;
 	case RM_EV_cancel:
 		rm_set_rep_mode(prm, MEAS_REP_MOD_REFUSE);
-		issue_null_reply(prm);
 		rm_state_goto(prm, RM_ST_END);
 		break;
 	case RM_EV_state_out:

@@ -24,6 +24,13 @@
  *****************************************************************************/
 #include "../halrf_precomp.h"
 #ifdef RF_8852B_SUPPORT
+void halrf_adc_fifo_rst_8852b(struct rf_info *rf, enum phl_phy_idx phy_idx, u8 path)
+{
+	halrf_wreg(rf, 0x20fc, 0xffff0000, 0x0303);
+	halrf_delay_us(rf, 10);
+	halrf_wreg(rf, 0x20fc, 0xffff0000, 0x3333);
+}
+
 bool halrf_bw_setting_8852b(struct rf_info *rf, enum rf_path path, enum channel_width bw, bool is_dav)
 {
 	u32 rf_reg18 = 0;
@@ -63,6 +70,9 @@ bool halrf_bw_setting_8852b(struct rf_info *rf, enum rf_path path, enum channel_
 	}
 
 	/*==== [Write RF register] ====*/
+	
+	rf_reg18 = (u32)(rf_reg18 & 0xf0fff) | BIT(12);
+
 	halrf_wrf(rf, path, reg_reg18_addr, MASKRF, rf_reg18);
 	RF_DBG(rf, DBG_RF_RFK, "[RFK] set %x at path%d, %x =0x%x\n",bw, path, reg_reg18_addr, halrf_rrf(rf, path, reg_reg18_addr, MASKRF));
 	return true;
@@ -94,6 +104,179 @@ bool halrf_ctrl_bw_8852b(struct rf_info *rf, enum channel_width bw)
 	return true;
 }
 
+#if 0
+void halrf_lck_check_8852b(struct rf_info *rf)
+{
+	u32 c = 0, temp, i;
+
+	while (c < 1000) {
+		if (halrf_rrf(rf, 0, 0xb7, BIT(8)) == 0)
+			break;
+		c++;
+		halrf_delay_us(rf, 1);
+	}
+
+	if (c == 1000) {
+		RF_WARNING("LCK timeout\n");
+	} else {
+		if (halrf_rrf(rf, 0, 0xc5, BIT(15)) == 0) {
+			RF_WARNING("SYN MMD reset\n");
+			/*MMD reset*/
+			halrf_wrf(rf, 0, 0xd5, BIT(8), 0x1);
+			halrf_wrf(rf, 0, 0xd5, BIT(6), 0x0);
+			halrf_wrf(rf, 0, 0xd5, BIT(6), 0x1);
+			halrf_wrf(rf, 0, 0xd5, BIT(8), 0x0);
+		}
+
+		for (i = 0; i < 10; i++)
+			halrf_delay_us(rf, 1);
+
+		if (halrf_rrf(rf, 0, 0xc5, BIT(15)) == 0) {
+			RF_WARNING("re-set RF 0x18\n");
+			halrf_wrf(rf, 0, 0xd3, BIT(8), 0x1);
+			temp = halrf_rrf(rf, 0, 0x18, MASKRF);
+			halrf_wrf(rf, 0, 0x18, MASKRF, temp);
+			halrf_wrf(rf, 0, 0xd3, BIT(8), 0x0);
+		}
+	}
+}
+#endif
+	
+bool halrf_set_s0_arfc18_8852b(struct rf_info *rf, u32 val)
+{
+	u32 c = 1000;
+	bool timeout = false;
+
+	halrf_wrf(rf, RF_PATH_A, 0xd3, BIT(8), 0x1);
+	halrf_wrf(rf, RF_PATH_A, 0x18, MASKRF, val);
+
+#ifdef HALRF_CONFIG_FW_IO_OFLD_SUPPORT
+	if (rf->phl_com->dev_cap.io_ofld) {
+		if (!halrf_polling_rf(rf, RF_PATH_A, 0xb7, BIT(8), 0x0, c)) {
+			timeout = true;
+			RF_WARNING("[LCK]IOoffload polling fail\n");
+		}
+	}
+#else 
+	c = 0;
+	while (c < 1000) {
+		if (halrf_rrf(rf, RF_PATH_A, 0xb7, BIT(8)) == 0)
+			break;
+		c++;
+		halrf_delay_us(rf, 1);
+	}
+	if (c == 1000) {
+		timeout = true;
+		RF_WARNING("[LCK]LCK timeout\n");
+	}
+#endif
+	halrf_wrf(rf, RF_PATH_A, 0xd3, BIT(8), 0x0);
+	return timeout;
+}
+
+
+bool halrf_do_lck_check_8852b(struct rf_info *rf)
+{
+	u32 step = 1;
+	bool lck_fail = false, mask_step2 =  false;
+	u32 temp_18, temp_a0, temp_af, temp_b1;
+
+	halrf_write_fwofld_start(rf);
+	for(step = 1; step <4; step++) {
+		switch (step) {
+		case 1:
+			if (halrf_rrf(rf, RF_PATH_A, 0xc5, BIT(15)) == 0) {
+				RF_WARNING("[LCK]SYN MMD reset\n");
+				halrf_wrf(rf, RF_PATH_A, 0xd5, BIT(8), 0x1);
+				halrf_wrf(rf, RF_PATH_A, 0xd5, BIT(6), 0x0);
+				halrf_wrf(rf, RF_PATH_A, 0xd5, BIT(6), 0x1);
+				halrf_wrf(rf, RF_PATH_A, 0xd5, BIT(8), 0x0);
+				halrf_delay_us(rf, 10);
+				lck_fail = true;
+			}
+			break;
+		case 2:
+			if (mask_step2)
+				break;
+			if (halrf_rrf(rf, RF_PATH_A, 0xc5, BIT(15)) == 0) {
+				RF_WARNING("[LCK]re-set RF 0x18\n");
+				temp_18 = halrf_rrf(rf, RF_PATH_A, 0x18, MASKRF);
+				temp_b1 = halrf_rrf(rf, RF_PATH_A, 0xb1, MASKRF);
+				halrf_wrf(rf, RF_PATH_A, 0xb1, 0x1c0, 0x1);
+				halrf_set_s0_arfc18_8852b(rf, temp_18);
+				halrf_wrf(rf, RF_PATH_A, 0xb1, MASKRF, temp_b1);
+				lck_fail = true;
+			} else {
+				lck_fail = false;
+			}
+			break;
+		case 3:
+			mask_step2 = true;
+			if (halrf_rrf(rf, RF_PATH_A, 0xc5, BIT(15)) == 0) {
+				RF_WARNING("[LCK]SYN off/on\n");
+				temp_18 = halrf_rrf(rf, RF_PATH_A, 0x18, MASKRF);
+				temp_a0 = halrf_rrf(rf, RF_PATH_A, 0xa0, MASKRF);
+				temp_af = halrf_rrf(rf, RF_PATH_A, 0xaf, MASKRF);
+				temp_b1 = halrf_rrf(rf, RF_PATH_A, 0xb1, MASKRF);
+				halrf_wrf(rf, RF_PATH_A, 0xa0, MASKRF, temp_a0);
+				halrf_wrf(rf, RF_PATH_A, 0xaf, MASKRF, temp_af);
+				halrf_wrf(rf, RF_PATH_A, 0xdd, BIT(4), 0x1);
+				halrf_wrf(rf, RF_PATH_A, 0xa0, 0xc, 0x0);
+				halrf_delay_us(rf, 10);
+				halrf_wrf(rf, RF_PATH_A, 0xa0, 0xc, 0x3);
+				halrf_wrf(rf, RF_PATH_A, 0xdd, BIT(4), 0x0);
+				halrf_delay_us(rf, 40);
+				halrf_wrf(rf, RF_PATH_A, 0xb1, 0x1c0, 0x1);
+				halrf_set_s0_arfc18_8852b(rf, temp_18);
+				halrf_wrf(rf, RF_PATH_A, 0xb1, MASKRF, temp_b1);
+				lck_fail = true;
+			} else { 
+				lck_fail = false;
+			}
+			break;
+		default:
+			break;
+		}
+		if (!lck_fail)
+			break;
+	}
+	return lck_fail;
+}
+
+void halrf_lck_check_8852b(struct rf_info *rf)
+{
+	struct halrf_rt_rpt *rpt = &rf->rf_rt_rpt;
+	u32 c = 0;
+	bool lck_fail = false;
+
+	while (c < 20) {
+		c++;
+		lck_fail = halrf_do_lck_check_8852b(rf);
+		if (!lck_fail)
+			break;
+	}
+
+	if (lck_fail) {
+		rpt->drv_lck_fail_count++;
+		RF_WARNING("[LCK]0xb2=%x, 0xc5=%x\n",
+		halrf_rrf(rf, RF_PATH_A, 0xb2, MASKRF),
+		halrf_rrf(rf, RF_PATH_A, 0xc5, MASKRF));
+	}
+}
+
+void halrf_set_ch_8852b(struct rf_info *rf, u32 val) {
+
+	bool timeout;
+	u32 temp_b1;
+
+	temp_b1 = halrf_rrf(rf, RF_PATH_A, 0xb1, MASKRF);
+	halrf_wrf(rf, RF_PATH_A, 0xb1, 0x1c0, 0x1);	
+	timeout = halrf_set_s0_arfc18_8852b(rf, val);
+	halrf_wrf(rf, RF_PATH_A, 0xb1, MASKRF, temp_b1);
+	if (!timeout)
+		halrf_lck_check_8852b(rf);
+}
+
 bool halrf_ch_setting_8852b(struct rf_info *rf,   enum rf_path path, u8 central_ch,
 			    bool *is_2g_ch, bool is_dav)
 {
@@ -115,13 +298,18 @@ bool halrf_ch_setting_8852b(struct rf_info *rf,   enum rf_path path, u8 central_
 	}
 	*is_2g_ch = (central_ch <= 14) ? true : false;
 	/*==== [Set RF Reg 0x18] ====*/
-	rf_reg18 &= ~0x303ff; /*[17:16],[9:8],[7:0]*/
+	rf_reg18 &= ~0x3e3ff; /*[17:16],[9:8],[7:0]*/
 	rf_reg18 |= central_ch; /* Channel*/
 	/*==== [5G Setting] ====*/
 	if (!*is_2g_ch)
 		rf_reg18 |= (BIT(16) | BIT(8));
-	halrf_wrf(rf, path, reg_reg18_addr, MASKRF, rf_reg18);
-	halrf_delay_us(rf, 100);
+
+	rf_reg18 = (u32)(rf_reg18 & 0xf0fff) | BIT(12);	
+	if ((path == RF_PATH_B) || !(is_dav))
+		halrf_wrf(rf, path, reg_reg18_addr, MASKRF, rf_reg18);
+	else
+		halrf_set_ch_8852b(rf, rf_reg18);
+//	halrf_delay_us(rf, 100);
 	halrf_wrf(rf, path, 0xcf, BIT(0), 0);
 	halrf_wrf(rf, path, 0xcf, BIT(0), 1);
 	RF_DBG(rf, DBG_RF_RFK, "[RFK]CH: %d for Path-%d, reg0x%x = 0x%x\n", central_ch, path, reg_reg18_addr, halrf_rrf(rf, path, reg_reg18_addr, MASKRF));
@@ -151,6 +339,7 @@ bool halrf_ctrl_ch_8852b(struct rf_info *rf,  u8 central_ch)
 	is_dav = false;
 	halrf_ch_setting_8852b(rf, RF_PATH_A, central_ch, &is_2g_ch, is_dav);	
 	halrf_ch_setting_8852b(rf, RF_PATH_B, central_ch, &is_2g_ch, is_dav);
+//	halrf_lck_check_8852b(rf);
 	//RF_DBG(rf, DBG_RF_RFK, "[RFK] CH: %d\n", central_ch);
 	return true;
 }
@@ -252,6 +441,8 @@ void halrf_set_rx_dck_8852b(struct rf_info *rf, enum phl_phy_idx phy, enum rf_pa
 	if (is_afe) {
 		ori_val = halrf_rreg(rf, 0x12a0 + (path << 13), MASKDWORD);
 
+		halrf_write_fwofld_start(rf);		/*FW Offload Start*/
+
 		halrf_wreg(rf, 0x12b8 + (path << 13), BIT(30), 0x1); /*debug en*/
 		//halrf_wreg(rf, 0x12a0 + (path << 13), BIT(19), 0x1);
 		//halrf_wreg(rf, 0x12a0 + (path << 13), 0x00070000, 0x3); /*ADC 320M*/
@@ -273,38 +464,54 @@ void halrf_set_rx_dck_8852b(struct rf_info *rf, enum phl_phy_idx phy, enum rf_pa
 		halrf_wreg(rf, 0x81e0, MASKDWORD, 0x02000000);
 		halrf_wreg(rf, 0x82e0, MASKDWORD, 0x02100000);
 		halrf_wreg(rf, 0x8000, BIT(2) | BIT(1), path); /*subpage_id*/
-
+#if 0
 		halrf_btc_rfk_ntfy(rf, phy_map, RF_BTC_RXDCK, RFK_ONESHOT_START);
-
+#endif
 		halrf_wreg(rf, 0x80ac, MASKDWORD, 0xfc030000);
 		halrf_wreg(rf, 0x80ac, MASKDWORD, 0x7c030000);
 
 		halrf_wreg(rf, 0x80d4, 0x003F0000, 0x34);
 
+#ifdef HALRF_CONFIG_FW_IO_OFLD_SUPPORT
+	if (rf->phl_com->dev_cap.io_ofld) {
+		if (!halrf_polling_bb(rf, 0x80fc, BIT(16), 0x1, 500)) {
+			RF_DBG(rf, DBG_RF_RXDCK, "[RX_DCK] 0x80fc timeout !!!\n");
+		}
+	} else
+#endif
+	{
 		while ((halrf_rreg(rf, 0x80fc, BIT(16)) == 0x0) && (i < 500)) {
 			halrf_delay_us(rf, 2);
 			i++;
 		}
-
+	}
+#if 0
 		halrf_btc_rfk_ntfy(rf, phy_map, RF_BTC_RXDCK, RFK_ONESHOT_STOP);
-
+#endif
 		halrf_wreg(rf, 0x8008, MASKDWORD, 0x00000000);
 		halrf_wreg(rf, 0x12b8 + (path << 13), BIT(30), 0x0); /*debug en*/
 		halrf_wreg(rf, 0x12a0 + (path << 13), MASKDWORD, ori_val);
 		halrf_wreg(rf, 0x5864, BIT(29), 0x0); /*iqk_control_sw_si*/
+
+		halrf_write_fwofld_end(rf);		/*FW Offload End*/
 	
 	} else {
+		halrf_write_fwofld_start(rf);		/*FW Offload Start*/
+
 		halrf_wrf(rf, path, 0x93, 0x0000f, 0x0); /*0: from RFC; 1: from AFE*/
-
+#if 0
 		halrf_btc_rfk_ntfy(rf, phy_map, RF_BTC_RXDCK, RFK_ONESHOT_START);
-
+#endif
 		halrf_wrf(rf, path, 0x92, BIT(0), 0x0);
 		halrf_wrf(rf, path, 0x92, BIT(0), 0x1);
 
 		for (i = 0; i < 30; i++) /*delay 600us*/
 			halrf_delay_us(rf, 20);
 
+		halrf_write_fwofld_end(rf);		/*FW Offload End*/
+#if 0
 		halrf_btc_rfk_ntfy(rf, phy_map, RF_BTC_RXDCK, RFK_ONESHOT_STOP);
+#endif
 	}
 #if 0
 	RF_DBG(rf, DBG_RF_RFK, "[RX_DCK] 0x92 = 0x%x, 0x93 = 0x%x\n",
@@ -353,6 +560,8 @@ void halrf_rx_dck_8852b(struct rf_info *rf, enum phl_phy_idx phy, bool is_afe)
 		rf_reg5 = halrf_rrf(rf, path, 0x5, MASKRF);
 		dck_tune = (u8)halrf_rrf(rf, path, 0x92, BIT(1));
 
+		halrf_write_fwofld_start(rf);		/*FW Offload Start*/
+
 		if (rf->is_tssi_mode[path]) 
 			halrf_wreg(rf, 0x5818 + (path << 13), BIT(30), 0x1); /*TSSI pause*/
 
@@ -360,6 +569,9 @@ void halrf_rx_dck_8852b(struct rf_info *rf, enum phl_phy_idx phy, bool is_afe)
 		halrf_wrf(rf, path, 0x92, BIT(1), 0x0);
 		//halrf_wrf(rf, path, 0x8f, BIT(11) | BIT(10), 0x1); /*EN_TIA_IDAC_LSB[1:0]*/
 		halrf_wrf(rf, path, 0x00, MASKRFMODE, RF_RX);
+
+		halrf_write_fwofld_end(rf);		/*FW Offload End*/
+
 		halrf_set_rx_dck_8852b(rf, phy, path, is_afe);
 #if 0
 		if (halrf_rx_dck_check_8852b(rf, path)) {
@@ -368,11 +580,16 @@ void halrf_rx_dck_8852b(struct rf_info *rf, enum phl_phy_idx phy, bool is_afe)
 			halrf_set_rx_dck_8852b(rf, phy, path, is_afe);
 		}
 #endif
+
+		halrf_write_fwofld_start(rf);		/*FW Offload Start*/
+
 		halrf_wrf(rf, path, 0x92, BIT(1), dck_tune);
 		halrf_wrf(rf, path, 0x5, MASKRF, rf_reg5);
 
 		if (rf->is_tssi_mode[path])
 			halrf_wreg(rf, 0x5818 + (path << 13), BIT(30), 0x0); /*TSSI resume*/
+
+		halrf_write_fwofld_end(rf);		/*FW Offload End*/
 
 	}
 }
@@ -392,13 +609,15 @@ void halrf_rx_dck_onoff_8852b(struct rf_info *rf, bool is_enable)
 
 void halrf_rck_8852b(struct rf_info *rf, enum rf_path path)
 {
-	u8 cnt = 0;
+	u8 cnt = 20;
 	u32 rf_reg5;
 	u32 rck_val = 0;
 
 	RF_DBG(rf, DBG_RF_RFK, "[RCK] ====== S%d RCK ======\n", path);
 
 	rf_reg5 = halrf_rrf(rf, path, 0x5, MASKRF);
+
+	halrf_write_fwofld_start(rf);		/*FW Offload Start*/
 
 	halrf_wrf(rf, path, 0x5, BIT(0), 0x0);
 	halrf_wrf(rf, path, 0x0, MASKRFMODE, RF_RX);
@@ -408,18 +627,33 @@ void halrf_rck_8852b(struct rf_info *rf, enum rf_path path)
 	/*RCK trigger*/
 	halrf_wrf(rf, path, 0x1b, MASKRF, 0x00240);
 
-	while ((halrf_rrf(rf, path, 0x1c, BIT(3)) == 0x00) && (cnt < 10)) {
-		halrf_delay_us(rf, 2);
-	cnt++;
+#ifdef HALRF_CONFIG_FW_IO_OFLD_SUPPORT
+	if (rf->phl_com->dev_cap.io_ofld) {
+		if (!halrf_polling_rf(rf, path, 0x1c, BIT(3), 0x1, 10)) {
+			RF_DBG(rf, DBG_RF_RFK, "[RCK] RF 0x1c[3] timeout !!!\n");
+		}
+	} else
+#endif
+	{
+		while ((halrf_rrf(rf, path, 0x1c, BIT(3)) == 0x00) && (cnt < 10)) {
+			halrf_delay_us(rf, 2);
+			cnt++;
+		}
 	}
+
+	halrf_write_fwofld_end(rf);		/*FW Offload End*/
 
 	rck_val = halrf_rrf(rf, path, 0x1b, 0x07C00); /*[14:10]*/
 
 	RF_DBG(rf, DBG_RF_RFK, "[RCK] rck_val = 0x%x, count = %d\n", rck_val, cnt);
 
+	halrf_write_fwofld_start(rf);		/*FW Offload Start*/
+
 	halrf_wrf(rf, path, 0x1b, MASKRF, rck_val);
 
 	halrf_wrf(rf, path, 0x5, MASKRF, rf_reg5);
+
+	halrf_write_fwofld_end(rf);		/*FW Offload End*/
 
 	RF_DBG(rf, DBG_RF_RFK, "[RCK] RF 0x1b = 0x%x\n",
 	       halrf_rrf(rf, path, 0x1b, MASKRF));
@@ -432,27 +666,35 @@ void iqk_backup_8852b(struct rf_info *rf, enum rf_path path)
 
 void halrf_bf_config_rf_8852b(struct rf_info *rf)
 {
-	u8 i;
+	halrf_wrf(rf, RF_PATH_A, 0xef, BIT(19), 0x1);
+	halrf_wrf(rf, RF_PATH_A, 0x33, 0xf, 0x1);
+	halrf_wrf(rf, RF_PATH_A, 0x3e, MASKRF, 0x000c6);
+	halrf_wrf(rf, RF_PATH_A, 0x3f, MASKRF, 0x00082);
+	halrf_wrf(rf, RF_PATH_A, 0x33, 0xf, 0x3);
+	halrf_wrf(rf, RF_PATH_A, 0x3e, MASKRF, 0x000c6);
+	halrf_wrf(rf, RF_PATH_A, 0x3f, MASKRF, 0x035e7);
+	halrf_wrf(rf, RF_PATH_A, 0x33, 0xf, 0xa);
+	halrf_wrf(rf, RF_PATH_A, 0x3e, MASKRF, 0x000c6);
+	halrf_wrf(rf, RF_PATH_A, 0x3f, MASKRF, 0x035f7);
+	halrf_wrf(rf, RF_PATH_A, 0x33, 0xf, 0xb);
+	halrf_wrf(rf, RF_PATH_A, 0x3e, MASKRF, 0x000c6);
+	halrf_wrf(rf, RF_PATH_A, 0x3f, MASKRF, 0x035ef);
+	halrf_wrf(rf, RF_PATH_A, 0xef, BIT(19), 0x0);
 
-	for (i = 0; i < 2; i++) {
-		halrf_wrf(rf, (enum rf_path)i, 0xef, BIT(19), 0x1);
-		halrf_wrf(rf, (enum rf_path)i, 0x33, 0xf, 0x1);
-		halrf_wrf(rf, (enum rf_path)i, 0x3e, MASKRF, 0x00001);
-		halrf_wrf(rf, (enum rf_path)i, 0x3f, MASKRF, 0xb2120);
-		halrf_wrf(rf, (enum rf_path)i, 0x33, 0xf, 0x2);
-		halrf_wrf(rf, (enum rf_path)i, 0x3e, MASKRF, 0x00001);
-		halrf_wrf(rf, (enum rf_path)i, 0x3f, MASKRF, 0xfe124);
-		halrf_wrf(rf, (enum rf_path)i, 0x33, 0xf, 0x3);
-		halrf_wrf(rf, (enum rf_path)i, 0x3e, MASKRF, 0x00001);
-		halrf_wrf(rf, (enum rf_path)i, 0x3f, MASKRF, 0x30d7c);
-		halrf_wrf(rf, (enum rf_path)i, 0x33, 0xf, 0xa);
-		halrf_wrf(rf, (enum rf_path)i, 0x3e, MASKRF, 0x00001);
-		halrf_wrf(rf, (enum rf_path)i, 0x3f, MASKRF, 0x30d7e);
-		halrf_wrf(rf, (enum rf_path)i, 0x33, 0xf, 0xb);
-		halrf_wrf(rf, (enum rf_path)i, 0x3e, MASKRF, 0x00001);
-		halrf_wrf(rf, (enum rf_path)i, 0x3f, MASKRF, 0x30d7d);
-		halrf_wrf(rf, (enum rf_path)i, 0xef, BIT(19), 0x0);
-	}
+	halrf_wrf(rf, RF_PATH_B, 0xef, BIT(19), 0x1);
+	halrf_wrf(rf, RF_PATH_B, 0x33, 0xf, 0x1);
+	halrf_wrf(rf, RF_PATH_B, 0x3e, MASKRF, 0x00031);
+	halrf_wrf(rf, RF_PATH_B, 0x3f, MASKRF, 0x00020);
+	halrf_wrf(rf, RF_PATH_B, 0x33, 0xf, 0x3);
+	halrf_wrf(rf, RF_PATH_B, 0x3e, MASKRF, 0x00031);
+	halrf_wrf(rf, RF_PATH_B, 0x3f, MASKRF, 0x80d79);
+	halrf_wrf(rf, RF_PATH_B, 0x33, 0xf, 0xa);
+	halrf_wrf(rf, RF_PATH_B, 0x3e, MASKRF, 0x00031);
+	halrf_wrf(rf, RF_PATH_B, 0x3f, MASKRF, 0x00d7d);
+	halrf_wrf(rf, RF_PATH_B, 0x33, 0xf, 0xb);
+	halrf_wrf(rf, RF_PATH_B, 0x3e, MASKRF, 0x00031);
+	halrf_wrf(rf, RF_PATH_B, 0x3f, MASKRF, 0x00d7b);
+	halrf_wrf(rf, RF_PATH_B, 0xef, BIT(19), 0x0);
 }
 
 void halrf_set_dpd_backoff_8852b(struct rf_info *rf, enum phl_phy_idx phy)
@@ -484,6 +726,8 @@ void halrf_dpk_init_8852b(struct rf_info *rf)
 
 void halrf_set_rxbb_bw_8852b(struct rf_info *rf, enum channel_width bw, enum rf_path path)
 {
+	halrf_write_fwofld_start(rf);
+
 	halrf_wrf(rf, path, 0xee, BIT(2), 0x1);
 	halrf_wrf(rf, path, 0x33, 0x0001F, 0x12); /*[4:0]*/
 
@@ -500,6 +744,8 @@ void halrf_set_rxbb_bw_8852b(struct rf_info *rf, enum channel_width bw, enum rf_
 		halrf_rrf(rf, path, 0x3f, 0x0003F));
 
 	halrf_wrf(rf, path, 0xee, BIT(2), 0x0);
+
+	halrf_write_fwofld_end(rf);
 }
 
 void halrf_rxbb_bw_8852b(struct rf_info *rf, enum phl_phy_idx phy, enum channel_width bw)
@@ -647,7 +893,7 @@ bool halrf_one_shot_nctl_done_check_8852b(struct rf_info *rf, enum rf_path path)
 	return is_ready;
 }
 
-static u32 check_rfc_reg[] = {0x9f, 0x0, 0x0, 0x0, 0x0,
+static u32 check_rfc_reg_8852b[] = {0x9f, 0x0, 0x0, 0x0, 0x0,
 	0x0, 0x0, 0x10000, 0x1, 0x10001,
 	0x5, 0x10005, 0x8, 0x18, 0x10018,
 	0x2, 0x10002, 0x11, 0x10011, 0x53,
@@ -655,23 +901,24 @@ static u32 check_rfc_reg[] = {0x9f, 0x0, 0x0, 0x0, 0x0,
 	0x7e, 0x7f, 0x80, 0x81, 0x8d,
 	0x8f, 0x90, 0x92, 0x93, 0xa0,
 	0xb2, 0xc5};
-static u32 check_dack_reg[] = {0x12a0, 0x32a0, 0x12b8, 0x32b8, 0x030c,
+static u32 check_dack_reg_8852b[] = {0x12a0, 0x32a0, 0x12b8, 0x32b8, 0x030c,
 	0x032c, 0xc000, 0xc004, 0xc020, 0xc024,
 	0xc100, 0xc104, 0xc120, 0xc124, 0xc0d4,
 	0xc1d4, 0xc0f0, 0xc0f4, 0xc1f0, 0xc1f4,
 	0xc05c, 0xc080, 0xc048, 0xc06c, 0xc060,
-	0xc084, 0xc05c, 0xc080, 0xc048, 0xc06c,
-	0xc060, 0xc084};
-static u32 check_iqk_reg[] = {0x8000, 0x8004, 0x8008, 0x8080, 0x808c,
+	0xc084, 0xc15c, 0xc180, 0xc148, 0xc16c,
+	0xc160, 0xc184, 0xc040, 0xc064, 0xc140,
+	0xc164};
+static u32 check_iqk_reg_8852b[] = {0x8000, 0x8004, 0x8008, 0x8080, 0x808c,
 	0x8120, 0x8124, 0x8138, 0x813c, 0x81dc,
 	0x8220, 0x8224, 0x8238, 0x823c, 0x82dc,
 	0x9fe0, 0x9fe4, 0x9fe8, 0x9fec, 0x9f30,
 	0x9f40, 0x9f50, 0x9f60, 0x9f70, 0x9f80,
 	0x9f90, 0x9fa0};
-static u32 check_dpk_reg[] = {0x80b0, 0x81bc, 0x82bc, 0x81b4, 0x82b4,
+static u32 check_dpk_reg_8852b[] = {0x80b0, 0x81bc, 0x82bc, 0x81b4, 0x82b4,
 	0x81c4, 0x82c4, 0x81c8, 0x82c8, 0x58d4,
 	0x78d4};
-static u32 check_tssi_reg[] = {0x0304, 0x5818, 0x581c, 0x5820, 0x1c60,
+static u32 check_tssi_reg_8852b[] = {0x0304, 0x5818, 0x581c, 0x5820, 0x1c60,
 	0x1c44, 0x5838, 0x5630, 0x5634, 0x58f8,
 	0x12c0, 0x120c, 0x1c04, 0x1c0c, 0x1c18,
 	0x7630, 0x7634, 0x7818, 0x781c, 0x7820,
@@ -681,66 +928,55 @@ static u32 check_tssi_reg[] = {0x0304, 0x5818, 0x581c, 0x5820, 0x1c60,
 void halrf_quick_checkrf_8852b(struct rf_info *rf)
 {
 	u32 path, temp, i;
-	u32	len = sizeof(check_rfc_reg) / sizeof(u32);
-	u32	*add = (u32 *)check_rfc_reg;
+	u32	len = sizeof(check_rfc_reg_8852b) / sizeof(u32);
+	u32	*add = (u32 *)check_rfc_reg_8852b;
 
 	/*check RFC*/
-	RF_DBG(rf, DBG_RF_CHK, "======RFC======\n");
+	RF_TRACE("======RFC======\n");
 	for (path = 0; path < 2; path++) {
 		for (i = 0; i < len; i++ ) {
 			temp = halrf_rrf(rf, path, add[i], MASKRF);
-			RF_DBG(rf, DBG_RF_CHK, "RF%d 0x%x = 0x%x\n",
-				path,
-				add[i],
-				temp);
-			}
+			RF_TRACE("RF%d 0x%x = 0x%x\n", path, add[i], temp);
+		}
 	}
 	/*check DACK*/
-	RF_DBG(rf, DBG_RF_CHK, "======DACK======\n");
-	len = sizeof(check_dack_reg) / sizeof(u32);
-	add = check_dack_reg;
+	RF_TRACE("======DACK======\n");
+	len = sizeof(check_dack_reg_8852b) / sizeof(u32);
+	add = check_dack_reg_8852b;
 	for (i = 0; i < len; i++ ) {
 		temp = halrf_rreg(rf, add[i], MASKDWORD);
-			RF_DBG(rf, DBG_RF_CHK, "0x%x = 0x%x\n",
-				add[i],
-				temp);
-			}
+		RF_TRACE("0x%x = 0x%x\n", add[i], temp);
+	}
 	/*check IQK*/
-	RF_DBG(rf, DBG_RF_CHK, "======IQK======\n");
-	len = sizeof(check_iqk_reg) / sizeof(u32);
-	add = check_iqk_reg;
+	RF_TRACE("======IQK======\n");
+	len = sizeof(check_iqk_reg_8852b) / sizeof(u32);
+	add = check_iqk_reg_8852b;
 
 	for (i = 0; i < len; i++ ) {
 		temp = halrf_rreg(rf, add[i], MASKDWORD);
-			RF_DBG(rf, DBG_RF_CHK, "0x%x = 0x%x\n",
-				add[i],
-				temp);
-			}
+		RF_TRACE("0x%x = 0x%x\n", add[i], temp);
+	}
 	/*check DPK*/
-	RF_DBG(rf, DBG_RF_CHK, "======DPK======\n");
-	len = sizeof(check_dpk_reg) / sizeof(u32);
-	add = check_dpk_reg;
+	RF_TRACE("======DPK======\n");
+	len = sizeof(check_dpk_reg_8852b) / sizeof(u32);
+	add = check_dpk_reg_8852b;
 	for (i = 0; i < len; i++ ) {
 		temp = halrf_rreg(rf, add[i], MASKDWORD);
-			RF_DBG(rf, DBG_RF_CHK, "0x%x = 0x%x\n",
-				add[i],
-				temp);
-			}
+		RF_TRACE("0x%x = 0x%x\n", add[i], temp);
+	}
 	/*check TSSI*/
-	RF_DBG(rf, DBG_RF_CHK, "======TSSI======\n");
-	len = sizeof(check_tssi_reg) / sizeof(u32);
-	add = check_tssi_reg;
+	RF_TRACE("======TSSI======\n");
+	len = sizeof(check_tssi_reg_8852b) / sizeof(u32);
+	add = check_tssi_reg_8852b;
 	for (i = 0; i < len; i++ ) {
 		temp = halrf_rreg(rf, add[i], MASKDWORD);
-			RF_DBG(rf, DBG_RF_CHK, "0x%x = 0x%x\n",
-				add[i],
-				temp);
-			}
+		RF_TRACE("0x%x = 0x%x\n", add[i], temp);
+	}
 }
 
 static u32 backup_mac_reg_8852b[] = {0x0};
 static u32 backup_bb_reg_8852b[] = {0x2344};
-static u32 backup_rf_reg_8852b[] = {0xef, 0xde, 0x0, 0x1e, 0x2, 0x85, 0x90, 0x5};
+static u32 backup_rf_reg_8852b[] = {0x00, 0x1e, 0x5};
 
 #if 1
 static struct halrf_iqk_ops iqk_ops= {

@@ -26,8 +26,8 @@
 #define __HALRF_8852B_H__
 #ifdef RF_8852B_SUPPORT
 
-#define RXDCK_VER_8852B 0x1
-#define RCK_VER_8852B 0x1
+#define RXDCK_VER_8852B 0x2
+#define RCK_VER_8852B 0x2
 
 void halrf_lo_test_8852b(struct rf_info *rf, bool is_on, enum rf_path path);
 u8 halrf_kpath_8852b(struct rf_info *rf, enum phl_phy_idx phy_idx);
@@ -50,6 +50,7 @@ void halrf_quick_checkrf_8852b(struct rf_info *rf);
 
 void halrf_before_one_shot_enable_8852b(struct rf_info *rf);
 bool halrf_one_shot_nctl_done_check_8852b(struct rf_info *rf, enum rf_path path);
+void halrf_adc_fifo_rst_8852b(struct rf_info *rf, enum phl_phy_idx phy_idx, u8 path);
 
 #endif
 #endif /*  __HALRF_8852b_H__ */

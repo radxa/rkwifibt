@@ -34,6 +34,10 @@
 				list_for_each_entry(_pos, _head, _member)
 #define phl_list_for_loop_safe(_pos, _n, _type, _head, _member) \
 				list_for_each_entry_safe(_pos, _n, _head, _member)
+#ifndef list_last_entry
+#define list_last_entry(ptr, type, member) \
+	list_entry((ptr)->prev, type, member)
+#endif
 
 #elif defined(PHL_PLATFORM_MACOS)
 

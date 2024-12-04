@@ -57,79 +57,37 @@ void phl_chan_dump_chandef(const char *caller, const int line, bool show_caller,
 }
 #endif
 
-#ifdef CONFIG_PHL_DFS
-static enum rtw_phl_status
-phl_radar_detect_hdl(struct phl_info_t *phl_info,
-	u8 channel, enum channel_width bwmode, enum chan_offset offset)
-{
-	struct rtw_phl_com_t *phl_com = phl_info->phl_com;
-	struct rtw_dfs_t *dfs_info = &phl_com->dfs_info;
-	enum rtw_phl_status rst = RTW_PHL_STATUS_FAILURE;
-	bool overlap_radar_range;
-
-	overlap_radar_range = rtw_hal_in_radar_domain(phl_info->hal,
-						channel, bwmode);
-	if (overlap_radar_range)
-		PHL_INFO("chan in DFS domain ch:%d,bw:%d\n", channel, bwmode);
-
-
-	if (overlap_radar_range && !dfs_info->dfs_enabled) {
-		/*radar_detect_enable*/
-		if (rtw_hal_radar_detect_cfg(phl_info->hal, true) ==
-			RTW_HAL_STATUS_SUCCESS) {
-			dfs_info->dfs_enabled = true;
-			PHL_INFO("[DFS] chan(%d) in radar range, enable dfs\n",
-				channel);
-			rst = RTW_PHL_STATUS_SUCCESS;
-		}
-		else {
-			PHL_ERR("[DFS] chan(%d) in radar range, enable dfs failed\n",
-				channel);
-		}
-
-	} else if (!overlap_radar_range && dfs_info->dfs_enabled) {
-		/*radar_detect_disable*/
-		if (rtw_hal_radar_detect_cfg(phl_info->hal, false) ==
-			RTW_HAL_STATUS_SUCCESS) {
-			dfs_info->dfs_enabled = false;
-			PHL_INFO("[DFS] chan(%d) not in radar range, disable dfs\n",
-				channel);
-			rst = RTW_PHL_STATUS_SUCCESS;
-		}
-		else {
-			PHL_ERR("[DFS] chan(%d) not in radar range, disable dfs failed\n",
-				channel);
-		}
-	}
-	return rst;
-}
-#endif /*CONFIG_PHL_DFS*/
-
 enum rtw_phl_status
-phl_set_ch_bw(struct rtw_wifi_role_t *wifi_role,
-		  struct rtw_chan_def *chdef, bool do_rfk)
+phl_set_ch_bw(struct phl_info_t *phl_info, u8 band_idx,
+		  struct rtw_chan_def *chdef, enum rfk_tri_type rt_type)
 {
-	struct phl_info_t *phl_info = wifi_role->phl_com->phl_priv;
 	enum rtw_hal_status hstatus = RTW_HAL_STATUS_FAILURE;
+	bool rd_enabled = false;
 
-	chdef->band = rtw_phl_get_band_type(chdef->chan);
 #ifdef CONFIG_PHL_DFS
-	phl_radar_detect_hdl(phl_info, chdef->chan, chdef->bw, chdef->offset);
+	struct dfs_rd_ch_switch_ctx dfs_rd_cs_ctx;
+
+	phl_dfs_rd_setting_before_ch_switch(phl_info, band_idx
+		, chdef->band, chdef->chan, chdef->bw, chdef->offset
+		, &dfs_rd_cs_ctx);
+	rd_enabled = dfs_rd_cs_ctx.rd_enabled;
 #endif
-	hstatus = rtw_hal_set_ch_bw(phl_info->hal, wifi_role->hw_band,
-				    chdef, do_rfk);
+
+	hstatus = rtw_hal_set_ch_bw(phl_info->hal, band_idx,
+				    chdef, rt_type, rd_enabled, false);
 	if (RTW_HAL_STATUS_SUCCESS != hstatus)
 		PHL_ERR("%s rtw_hal_set_ch_bw: statuts = %u\n", __func__, hstatus);
+
+#ifdef CONFIG_PHL_DFS
+	phl_dfs_rd_setting_after_ch_switch(phl_info, band_idx
+		, chdef->band, chdef->chan, chdef->bw, chdef->offset
+		, &dfs_rd_cs_ctx);
+#endif
 
 	return RTW_PHL_STATUS_SUCCESS;
 }
 
 #ifdef CONFIG_CMD_DISP
-struct setch_param {
-	struct rtw_wifi_role_t *wrole;
-	struct rtw_chan_def chdef;
-	bool do_rfk;
-};
 
 static void
 _phl_chg_op_chdef_done(void *drv_priv, u8 *cmd, u32 cmd_len,
@@ -144,9 +102,12 @@ _phl_chg_op_chdef_done(void *drv_priv, u8 *cmd, u32 cmd_len,
 			if (RTW_PHL_STATUS_CMD_SUCCESS == status &&
 			    RTW_PHL_STATUS_CMD_SUCCESS == param->cmd_start_sts)
 				psts = RTW_PHL_STATUS_SUCCESS;
-			param->chg_opch_done(drv_priv, param->wrole->id,
-						psts);
+			param->chg_opch_done(drv_priv,
+			                     param->wrole->id,
+			                     param->rlink,
+			                     psts);
 		}
+		_os_spinlock_free(drv_priv, &param->lock);
 		_os_kmem_free(drv_priv, cmd, cmd_len);
 		cmd = NULL;
 		PHL_INFO("%s.....\n", __func__);
@@ -155,12 +116,27 @@ _phl_chg_op_chdef_done(void *drv_priv, u8 *cmd, u32 cmd_len,
 
 static void _phl_chg_op_chdef_start_done(void *drv_priv, u8 *cmd, u32 cmd_len, enum rtw_phl_status status)
 {
-	if (cmd) {
-		struct chg_opch_param *param = (struct chg_opch_param *)cmd;
+	struct chg_opch_param *param = NULL;
 
-		param->cmd_start_sts = status;
-		PHL_INFO("%s.....\n", __func__);
+	if (!cmd)
+		return;
+	param = (struct chg_opch_param *)cmd;
+
+	_os_spinlock(drv_priv, &param->lock, _bh, NULL);
+	if (param->send_end_msg_fail) {
+		_os_spinunlock(drv_priv, &param->lock, _bh, NULL);
+		_os_spinlock_free(drv_priv, &param->lock);
+		_os_kmem_free(drv_priv, cmd, cmd_len);
+		cmd = NULL;
+		PHL_ERR("%s: Send MSG_EVT_CHG_OP_CH_DEF_END fail, Free para!!, Something went wrong!!\n",
+			__func__);
+		goto _exit;
 	}
+	param->cmd_start_sts = status;
+	param->start_msg_done = true;
+	_os_spinunlock(drv_priv, &param->lock, _bh, NULL);
+_exit:
+	PHL_INFO("%s.....\n", __func__);
 }
 
 enum rtw_phl_status
@@ -174,37 +150,48 @@ phl_cmd_chg_op_chdef_start_hdl(struct phl_info_t *phl, u8 *param)
 	struct rtw_phl_stainfo_t *sta = NULL;
 	struct rtw_chan_def chctx_result = {0};
 
-	sta = rtw_phl_get_stainfo_self(phl, ch_param->wrole);
+	sta = rtw_phl_get_stainfo_self(phl, ch_param->rlink);
 	if (NULL == sta) {
 		PHL_TRACE(COMP_PHL_DBG, _PHL_ERR_, "%s: cannot get stainfo_self\n",
 			__FUNCTION__);
 		goto exit;
 	}
+
 	/* Update MR chctx */
-	if (RTW_PHL_STATUS_SUCCESS != phl_mr_chandef_chg(phl, ch_param->wrole,
-					&ch_param->new_chdef, &chctx_result)) {
+	if (RTW_PHL_STATUS_SUCCESS != phl_mr_chandef_chg(phl,
+	                                                 ch_param->wrole,
+	                                                 ch_param->rlink,
+	                                                 &ch_param->new_chdef,
+	                                                 &chctx_result)) {
 		PHL_TRACE(COMP_PHL_DBG, _PHL_ERR_, "%s: MR chang chdef failed!\n",
 			__FUNCTION__);
 		goto exit;
 	}
-	/* Up Role chdef */
-	_os_mem_cpy(drv, &ch_param->wrole->chandef, &ch_param->new_chdef,
-			sizeof(struct rtw_chan_def));
+
+	/* Update role link chdef */
+	_os_mem_cpy(drv,
+	            &ch_param->rlink->chandef,
+	            &ch_param->new_chdef,
+	            sizeof(struct rtw_chan_def));
+
 	/* Update self Sta chdef */
 	_os_mem_cpy(drv, &sta->chandef, &ch_param->new_chdef,
 			sizeof(struct rtw_chan_def));
 	/* Notify rf for the suspended channel */
 	rtw_hal_disconnect_notify(phl->hal, &ch_param->ori_chdef);
 	/* Switch channel */
-	if (RTW_PHL_STATUS_SUCCESS != phl_set_ch_bw(ch_param->wrole,
-					&chctx_result, true)) {
+	if (RTW_PHL_STATUS_SUCCESS != phl_set_ch_bw(phl,
+	                                            ch_param->rlink->hw_band,
+	                                            &chctx_result,
+	                                            RFK_TYPE_CHG_OP)) {
 		PHL_TRACE(COMP_PHL_DBG, _PHL_ERR_, "%s: Switch ch failed!\n",
 			__FUNCTION__);
 		goto exit;
 	}
-	if (ch_param->wrole->mstate == MLME_LINKED) {
+
+	if (ch_param->rlink->mstate == MLME_LINKED) {
 		/*Up STA setting(RA....) */
-		sta_queue = &ch_param->wrole->assoc_sta_queue;
+		sta_queue = &ch_param->rlink->assoc_sta_queue;
 		_os_spinlock(drv, &sta_queue->lock, _bh, NULL);
 		phl_list_for_loop(sta, struct rtw_phl_stainfo_t,
 				&sta_queue->queue, list) {
@@ -222,8 +209,15 @@ exit:
 
 enum rtw_phl_status
 rtw_phl_cmd_chg_op_chdef(struct rtw_wifi_role_t *wrole,
-	struct rtw_chan_def *new_chdef, bool cmd_wait, u32 cmd_timeout,
-	void (*chg_opch_done)(void *priv, u8 ridx, enum rtw_phl_status status))
+                         struct rtw_wifi_role_link_t *rlink,
+                         struct rtw_chan_def *new_chdef,
+                         bool cmd_wait,
+                         u32 cmd_timeout,
+                         void (*chg_opch_done)(void *priv,
+                                               u8 ridx,
+                                               struct rtw_wifi_role_link_t *rlink,
+                                               enum rtw_phl_status status)
+)
 {
 	enum rtw_phl_status psts = RTW_PHL_STATUS_FAILURE;
 	struct phl_info_t *phl = wrole->phl_com->phl_priv;
@@ -235,14 +229,18 @@ rtw_phl_cmd_chg_op_chdef(struct rtw_wifi_role_t *wrole,
 		PHL_ERR("%s: alloc param failed!\n", __func__);
 		goto _exit;
 	}
+	_os_spinlock_init(drv, &param->lock);
 	param->wrole = wrole;
+	param->rlink = rlink;
 	_os_mem_cpy(drv, &param->new_chdef, new_chdef,
 			sizeof(struct rtw_chan_def));
-	_os_mem_cpy(drv, &param->ori_chdef, &wrole->chandef,
-			sizeof(struct rtw_chan_def));
+
+	_os_mem_cpy(drv, &param->ori_chdef, &rlink->chandef,
+	            sizeof(struct rtw_chan_def));
+
 	param->chg_opch_done = chg_opch_done;
 	psts = phl_cmd_enqueue(phl,
-	                       wrole->hw_band,
+	                       rlink->hw_band,
 	                       MSG_EVT_CHG_OP_CH_DEF_START,
 	                       (u8 *)param,
 	                       param_len,
@@ -254,13 +252,14 @@ rtw_phl_cmd_chg_op_chdef(struct rtw_wifi_role_t *wrole,
 			__func__);
 		if (!is_cmd_failure(psts)) {
 			/* Send cmd fail */
+			_os_spinlock_free(drv, &param->lock);
 			_os_kmem_free(drv, param, param_len);
 			psts = RTW_PHL_STATUS_FAILURE;
 		}
 		goto _exit;
 	}
 	psts = phl_cmd_enqueue(phl,
-	                       wrole->hw_band,
+	                       rlink->hw_band,
 	                       MSG_EVT_CHG_OP_CH_DEF_END,
 	                       (u8 *)param,
 	                       param_len,
@@ -268,11 +267,21 @@ rtw_phl_cmd_chg_op_chdef(struct rtw_wifi_role_t *wrole,
 	                       cmd_wait ? PHL_CMD_WAIT : PHL_CMD_NO_WAIT,
 	                       cmd_timeout);
 	if (psts != RTW_PHL_STATUS_SUCCESS) {
-		PHL_INFO("%s: Fail to issue change op chdef start!!\n",
+		PHL_INFO("%s: Fail to issue change op chdef end!!\n",
 			__func__);
 		if (!is_cmd_failure(psts)) {
 			/* Send cmd fail */
-			_os_kmem_free(drv, param, param_len);
+			_os_spinlock(drv, &param->lock, _bh, NULL);
+			if (param->start_msg_done) {
+				_os_spinunlock(drv, &param->lock, _bh, NULL);
+				_os_spinlock_free(drv, &param->lock);
+				_os_kmem_free(drv, param, param_len);
+				psts = RTW_PHL_STATUS_FAILURE;
+				goto _exit;
+			} else {
+				param->send_end_msg_fail = true;
+			}
+			_os_spinunlock(drv, &param->lock, _bh, NULL);
 			psts = RTW_PHL_STATUS_FAILURE;
 		}
 		goto _exit;
@@ -287,9 +296,10 @@ phl_cmd_set_ch_bw_hdl(struct phl_info_t *phl_info, u8 *param)
 {
 	struct setch_param *ch_param = (struct setch_param *)param;
 
-	return phl_set_ch_bw(ch_param->wrole,
-	                         &(ch_param->chdef),
-	                         ch_param->do_rfk);
+	return phl_set_ch_bw(phl_info,
+	                     ch_param->rlink->hw_band,
+	                     &(ch_param->chdef),
+	                     ch_param->rt_type);
 }
 
 static void _phl_set_ch_bw_done(void *drv_priv, u8 *cmd, u32 cmd_len, enum rtw_phl_status status)
@@ -303,8 +313,9 @@ static void _phl_set_ch_bw_done(void *drv_priv, u8 *cmd, u32 cmd_len, enum rtw_p
 
 enum rtw_phl_status
 rtw_phl_cmd_set_ch_bw(struct rtw_wifi_role_t *wifi_role,
+                      struct rtw_wifi_role_link_t *rlink,
                       struct rtw_chan_def *chdef,
-                      bool do_rfk,
+                      enum rfk_tri_type rt_type,
                       enum phl_cmd_type cmd_type,
                       u32 cmd_timeout)
 {
@@ -315,7 +326,7 @@ rtw_phl_cmd_set_ch_bw(struct rtw_wifi_role_t *wifi_role,
 	u32 param_len;
 
 	if (cmd_type == PHL_CMD_DIRECTLY) {
-		psts = phl_set_ch_bw(wifi_role, chdef, do_rfk);
+		psts = phl_set_ch_bw(phl_info, rlink->hw_band, chdef, rt_type);
 		goto _exit;
 	}
 
@@ -326,11 +337,12 @@ rtw_phl_cmd_set_ch_bw(struct rtw_wifi_role_t *wifi_role,
 		goto _exit;
 	}
 	param->wrole = wifi_role;
+	param->rlink = rlink;
 	_os_mem_cpy(drv, &param->chdef, chdef, sizeof(struct rtw_chan_def));
-	param->do_rfk = do_rfk;
+	param->rt_type = rt_type;
 
 	psts = phl_cmd_enqueue(phl_info,
-	                       wifi_role->hw_band,
+	                       rlink->hw_band,
 	                       MSG_EVT_SWCH_START,
 	                       (u8 *)param,
 	                       param_len,
@@ -351,44 +363,61 @@ _exit:
 }
 #endif /*CONFIG_CMD_DISP*/
 
-u8 rtw_phl_get_cur_ch(struct rtw_wifi_role_t *wifi_role)
+u8 rtw_phl_get_cur_ch(struct rtw_wifi_role_t *wifi_role,
+                      struct rtw_wifi_role_link_t *rlink)
 {
 	struct phl_info_t *phl_info = wifi_role->phl_com->phl_priv;
 
-	return rtw_hal_get_cur_ch(phl_info->hal, wifi_role->hw_band);
+	return rtw_hal_get_cur_ch(phl_info->hal, rlink->hw_band);
 }
 
 enum rtw_phl_status
 rtw_phl_get_cur_hal_chdef(struct rtw_wifi_role_t *wifi_role,
-					struct rtw_chan_def *cur_chandef)
+                          struct rtw_wifi_role_link_t *rlink,
+                          struct rtw_chan_def *cur_chandef)
 {
 	struct phl_info_t *phl_info = wifi_role->phl_com->phl_priv;
 
-	rtw_hal_get_cur_chdef(phl_info->hal, wifi_role->hw_band, cur_chandef);
+	rtw_hal_get_cur_chdef(phl_info->hal, rlink->hw_band, cur_chandef);
+	return RTW_PHL_STATUS_SUCCESS;
+}
+
+enum rtw_phl_status
+rtw_phl_get_cur_hal_chdef_by_hwband(void *phl_info,
+                          enum phl_band_idx band_idx,
+                          struct rtw_chan_def *cur_chandef)
+{
+	if (band_idx >= HW_BAND_MAX)
+		return RTW_PHL_STATUS_FAILURE;
+
+	rtw_hal_get_cur_chdef(((struct phl_info_t *)phl_info)->hal, band_idx, cur_chandef);
 	return RTW_PHL_STATUS_SUCCESS;
 }
 
 static enum rtw_phl_status
-_dfs_hw_tx_pause(struct rtw_wifi_role_t *wifi_role, bool tx_pause)
+_dfs_hw_tx_pause(struct phl_info_t *phl_info,
+                 enum phl_band_idx hw_band,
+                 bool tx_pause,
+                 u8 reason)
 {
 
-	struct phl_info_t *phl_info = wifi_role->phl_com->phl_priv;
 	enum rtw_hal_status hstatus = RTW_HAL_STATUS_FAILURE;
 
-	hstatus = rtw_hal_dfs_pause_tx(phl_info->hal, wifi_role->hw_band, tx_pause);
+	hstatus = rtw_hal_dfs_pause_tx(phl_info->hal, hw_band, tx_pause, reason);
 
 	if (RTW_HAL_STATUS_SUCCESS == hstatus) {
 		return RTW_PHL_STATUS_SUCCESS;
 	} else {
-		PHL_ERR("%s Failure :%u\n",__func__, hstatus);
+		PHL_ERR("%s Failure :%u\n", __func__, hstatus);
 		return RTW_PHL_STATUS_FAILURE;
 	}
 }
 
 #ifdef CONFIG_CMD_DISP
 struct dfs_txpause_param {
-	struct rtw_wifi_role_t *wrole;
+	enum phl_band_idx hw_band;
 	bool pause;
+	u8 pause_reason;
 };
 
 enum rtw_phl_status
@@ -396,10 +425,10 @@ phl_cmd_dfs_tx_pause_hdl(struct phl_info_t *phl_info, u8 *param)
 {
 	struct dfs_txpause_param *dfs = (struct dfs_txpause_param *)param;
 
-	PHL_INFO("%s(), dfs param, wrole = %p, pause = %d\n",
-			__func__, dfs->wrole, dfs->pause);
+	PHL_INFO("%s(), dfs param, hw_band = %u, pause = %d pause_reason = %d\n",
+		 __func__, dfs->hw_band, dfs->pause, dfs->pause_reason);
 
-	return _dfs_hw_tx_pause(dfs->wrole, dfs->pause);
+	return _dfs_hw_tx_pause(phl_info, dfs->hw_band, dfs->pause, dfs->pause_reason);
 }
 
 static void _phl_dfs_tx_pause_done(void *drv_priv, u8 *cmd, u32 cmd_len, enum rtw_phl_status status)
@@ -412,13 +441,16 @@ static void _phl_dfs_tx_pause_done(void *drv_priv, u8 *cmd, u32 cmd_len, enum rt
 }
 #endif /*CONFIG_CMD_DISP*/
 
-enum rtw_phl_status
-rtw_phl_cmd_dfs_tx_pause(struct rtw_wifi_role_t *wifi_role, bool pause,
-                      		enum phl_cmd_type cmd_type, u32 cmd_timeout)
+static enum rtw_phl_status
+_rtw_phl_cmd_dfs_tx_pause(struct phl_info_t *phl_info,
+                         enum phl_band_idx hw_band,
+                         bool pause,
+                         enum tx_pause_rson reason,
+                         enum phl_cmd_type cmd_type,
+                         u32 cmd_timeout)
 {
 #ifdef CONFIG_CMD_DISP
-	struct phl_info_t *phl_info = wifi_role->phl_com->phl_priv;
-	void *drv = wifi_role->phl_com->drv_priv;
+	void *drv = phl_info->phl_com->drv_priv;
 	enum rtw_phl_status psts = RTW_PHL_STATUS_FAILURE;
 	struct dfs_txpause_param *param = NULL;
 	u32 param_len;
@@ -429,15 +461,24 @@ rtw_phl_cmd_dfs_tx_pause(struct rtw_wifi_role_t *wifi_role, bool pause,
 		PHL_ERR("%s: alloc param failed!\n", __func__);
 		goto _exit;
 	}
-	param->wrole = wifi_role;
+	param->hw_band = hw_band;
 	param->pause = pause;
+	param->pause_reason = reason;
+
+	if (cmd_type == PHL_CMD_DIRECTLY) {
+		psts = phl_cmd_dfs_tx_pause_hdl(phl_info, (u8 *)param);
+		_phl_dfs_tx_pause_done(drv, (u8 *)param, param_len, psts);
+		goto _exit;
+	}
 
 	psts = phl_cmd_enqueue(phl_info,
-			wifi_role->hw_band,
-			MSG_EVT_DFS_PAUSE_TX,
-			(u8 *)param, param_len,
-			_phl_dfs_tx_pause_done,
-			cmd_type, cmd_timeout);
+	                       hw_band,
+	                       MSG_EVT_DFS_PAUSE_TX,
+	                       (u8 *)param,
+	                       param_len,
+	                       _phl_dfs_tx_pause_done,
+	                       cmd_type,
+	                       cmd_timeout);
 
 	if (is_cmd_failure(psts)) {
 		/* Send cmd success, but wait cmd fail*/
@@ -457,89 +498,206 @@ _exit:
 #endif
 }
 
-
-#ifdef CONFIG_DBCC_SUPPORT
 enum rtw_phl_status
-rtw_phl_dbcc_test(void *phl, enum dbcc_test_id id, void *param)
+rtw_phl_cmd_dfs_csa_tx_pause(void *phl_info,
+                         enum phl_band_idx hw_band,
+                         bool pause,
+                         bool csa,
+                         enum phl_cmd_type cmd_type,
+                         u32 cmd_timeout)
 {
-	struct phl_info_t *phl_info = (struct phl_info_t *)phl;
-	enum rtw_hal_status hsts = RTW_HAL_STATUS_FAILURE;
-
-	switch (id){
-	case DBCC_PRE_CFG :
-	{
-		bool dbcc_en = *(bool *)param;
-
-		PHL_INFO("[DBCC] PRE_CFG :%s\n", (dbcc_en) ? "EN" : "DIS");
-		hsts = rtw_hal_dbcc_pre_cfg(phl_info->hal, phl_info->phl_com, dbcc_en);
-	}
-	break;
-
-	case DBCC_CFG :
-	{
-		bool dbcc_en = *(bool *)param;
-
-		PHL_INFO("[DBCC] CFG :%s\n", (dbcc_en) ? "EN" : "DIS");
-		hsts = rtw_hal_dbcc_cfg(phl_info->hal, phl_info->phl_com, dbcc_en);
-	}
-	break;
-	case DBCC_CLEAN_TXQ :
-		hsts = rtw_hal_clean_tx_queue(phl_info->hal);
-		break;
-	default :
-		PHL_ERR("%s unknown DBCC Test ID:%d\n",__func__, id);
-		break;
-	}
-
-	return RTW_PHL_STATUS_SUCCESS;
+	return _rtw_phl_cmd_dfs_tx_pause(phl_info, hw_band, pause
+		, PAUSE_RSON_DFS_CSA
+		, cmd_type, cmd_timeout);
 }
-#endif
+
+enum rtw_phl_status
+rtw_phl_cmd_dfs_csa_mg_tx_pause(void *phl_info,
+                         enum phl_band_idx hw_band,
+                         bool pause,
+                         enum phl_cmd_type cmd_type,
+                         u32 cmd_timeout)
+{
+	return _rtw_phl_cmd_dfs_tx_pause(phl_info, hw_band, pause
+		, PAUSE_RSON_DFS_CSA_MG
+		, cmd_type, cmd_timeout);
+}
 
 #define MAX_CHANCTX_QUEUE_NUM	2
 
+static enum rtw_phl_status
+_phl_cc_band_map_set(struct phl_info_t *phl_info,
+		struct hw_band_ctl_t *band_ctrl, struct rtw_chan_ctx *chanctx)
+{
+	struct rtw_chan_def *chan_def = &chanctx->chan_def;
+	static enum rtw_phl_status psts = RTW_PHL_STATUS_SUCCESS;
+
+	if (BAND_2GHZ(chan_def->band)) {
+		_os_atomic_inc(phl_to_drvpriv(phl_info), &band_ctrl->ccb_24g_rc);
+		band_ctrl->chctx_band_map |= BIT(CC_BAND_24G);
+
+	} else if (BAND_5GHZ(chan_def->band)) {
+		if (CH_5GHZ_BAND1(chan_def->chan)) {
+			_os_atomic_inc(phl_to_drvpriv(phl_info), &band_ctrl->ccb_5gb1_rc);
+			band_ctrl->chctx_band_map |= BIT(CC_BAND_5G_B1);
+		} else if (CH_5GHZ_BAND2(chan_def->chan)) {
+			_os_atomic_inc(phl_to_drvpriv(phl_info), &band_ctrl->ccb_5gb2_rc);
+			band_ctrl->chctx_band_map |= BIT(CC_BAND_5G_B2);
+		} else if (CH_5GHZ_BAND3(chan_def->chan)) {
+			_os_atomic_inc(phl_to_drvpriv(phl_info), &band_ctrl->ccb_5gb3_rc);
+			band_ctrl->chctx_band_map |= BIT(CC_BAND_5G_B3);
+		} else if (CH_5GHZ_BAND4(chan_def->chan)) {
+			_os_atomic_inc(phl_to_drvpriv(phl_info), &band_ctrl->ccb_5gb4_rc);
+			band_ctrl->chctx_band_map |= BIT(CC_BAND_5G_B4);
+		} else {
+			PHL_ERR("%s chctx 5G band unknow\n", __func__);
+			_os_warn_on(1);
+			psts = RTW_PHL_STATUS_FAILURE;
+		}
+	} else if (BAND_6GHZ(chan_def->band)) {
+		if (CH_6GHZ_UNII5(chan_def->chan)) {
+			_os_atomic_inc(phl_to_drvpriv(phl_info), &band_ctrl->ccb_6gu5_rc);
+			band_ctrl->chctx_band_map |= BIT(CC_BAND_6G_U5);
+		} else if (CH_6GHZ_UNII6(chan_def->chan)) {
+			_os_atomic_inc(phl_to_drvpriv(phl_info), &band_ctrl->ccb_6gu6_rc);
+			band_ctrl->chctx_band_map |= BIT(CC_BAND_6G_U6);
+		} else if (CH_6GHZ_UNII7(chan_def->chan)) {
+			_os_atomic_inc(phl_to_drvpriv(phl_info), &band_ctrl->ccb_6gu7_rc);
+			band_ctrl->chctx_band_map |= BIT(CC_BAND_6G_U7);
+		} else if (CH_6GHZ_UNII8(chan_def->chan)) {
+			_os_atomic_inc(phl_to_drvpriv(phl_info), &band_ctrl->ccb_6gu8_rc);
+			band_ctrl->chctx_band_map |= BIT(CC_BAND_6G_U8);
+		} else {
+			PHL_ERR("%s chctx 6G band unknow\n", __func__);
+			_os_warn_on(1);
+			psts = RTW_PHL_STATUS_FAILURE;
+		}
+	}
+
+	return psts;
+}
+
+static enum rtw_phl_status
+_phl_cc_band_map_clr(struct phl_info_t *phl_info,
+		struct hw_band_ctl_t *band_ctrl, struct rtw_chan_ctx *chanctx)
+{
+	struct rtw_chan_def *chan_def = &chanctx->chan_def;
+	static enum rtw_phl_status psts = RTW_PHL_STATUS_SUCCESS;
+
+	if (BAND_2GHZ(chan_def->band)) {
+		_os_atomic_dec(phl_to_drvpriv(phl_info), &band_ctrl->ccb_24g_rc);
+		if (_os_atomic_read(phl_to_drvpriv(phl_info), &band_ctrl->ccb_24g_rc) == 0)
+			band_ctrl->chctx_band_map &= ~BIT(CC_BAND_24G);
+	}
+	else if (BAND_5GHZ(chan_def->band)) {
+		if (CH_5GHZ_BAND1(chan_def->chan)) {
+			_os_atomic_dec(phl_to_drvpriv(phl_info), &band_ctrl->ccb_5gb1_rc);
+			if (_os_atomic_read(phl_to_drvpriv(phl_info), &band_ctrl->ccb_5gb1_rc) == 0)
+				band_ctrl->chctx_band_map &= ~BIT(CC_BAND_5G_B1);
+		} else if (CH_5GHZ_BAND2(chan_def->chan)) {
+			_os_atomic_dec(phl_to_drvpriv(phl_info), &band_ctrl->ccb_5gb2_rc);
+			if (_os_atomic_read(phl_to_drvpriv(phl_info), &band_ctrl->ccb_5gb2_rc) == 0)
+				band_ctrl->chctx_band_map &= ~BIT(CC_BAND_5G_B2);
+		} else if (CH_5GHZ_BAND3(chan_def->chan)) {
+			_os_atomic_dec(phl_to_drvpriv(phl_info), &band_ctrl->ccb_5gb3_rc);
+			if (_os_atomic_read(phl_to_drvpriv(phl_info), &band_ctrl->ccb_5gb3_rc) == 0)
+				band_ctrl->chctx_band_map &= ~BIT(CC_BAND_5G_B3);
+		} else if (CH_5GHZ_BAND4(chan_def->chan)) {
+			_os_atomic_dec(phl_to_drvpriv(phl_info), &band_ctrl->ccb_5gb4_rc);
+			if (_os_atomic_read(phl_to_drvpriv(phl_info), &band_ctrl->ccb_5gb4_rc) == 0)
+				band_ctrl->chctx_band_map &= ~BIT(CC_BAND_5G_B4);
+		} else {
+			PHL_ERR("%s chctx 5G band unknow\n", __func__);
+			_os_warn_on(1);
+			psts = RTW_PHL_STATUS_FAILURE;
+		}
+	}
+	else if (BAND_6GHZ(chan_def->band)) {
+		if (CH_6GHZ_UNII5(chan_def->chan)) {
+			_os_atomic_dec(phl_to_drvpriv(phl_info), &band_ctrl->ccb_6gu5_rc);
+			if (_os_atomic_read(phl_to_drvpriv(phl_info), &band_ctrl->ccb_6gu5_rc) == 0)
+				band_ctrl->chctx_band_map &= ~BIT(CC_BAND_6G_U5);
+		} else if (CH_6GHZ_UNII6(chan_def->chan)) {
+			_os_atomic_dec(phl_to_drvpriv(phl_info), &band_ctrl->ccb_6gu6_rc);
+			if (_os_atomic_read(phl_to_drvpriv(phl_info), &band_ctrl->ccb_6gu6_rc) == 0)
+				band_ctrl->chctx_band_map &= ~BIT(CC_BAND_6G_U6);
+		} else if (CH_6GHZ_UNII7(chan_def->chan)) {
+			_os_atomic_dec(phl_to_drvpriv(phl_info), &band_ctrl->ccb_6gu7_rc);
+			if (_os_atomic_read(phl_to_drvpriv(phl_info), &band_ctrl->ccb_6gu7_rc) == 0)
+				band_ctrl->chctx_band_map &= ~BIT(CC_BAND_6G_U7);
+		} else if (CH_6GHZ_UNII8(chan_def->chan)) {
+			_os_atomic_dec(phl_to_drvpriv(phl_info), &band_ctrl->ccb_6gu8_rc);
+			if (_os_atomic_read(phl_to_drvpriv(phl_info), &band_ctrl->ccb_6gu8_rc) == 0)
+				band_ctrl->chctx_band_map &= ~BIT(CC_BAND_6G_U8);
+		} else {
+			PHL_ERR("%s chctx 6G band unknow\n", __func__);
+			_os_warn_on(1);
+			psts = RTW_PHL_STATUS_FAILURE;
+		}
+	}
+	return psts;
+}
 
 static enum rtw_phl_status
 _phl_chanctx_add(struct phl_info_t *phl_info,
-			struct phl_queue *chan_ctx_queue,
+			struct hw_band_ctl_t *band_ctrl,
 			struct rtw_chan_ctx *chanctx)
 {
+	struct phl_queue *chan_ctx_queue;
+	enum rtw_phl_status psts = RTW_PHL_STATUS_FAILURE;
+
 	if (!chanctx)
-		return RTW_PHL_STATUS_FAILURE;
+		return psts;
+
+	chan_ctx_queue = &band_ctrl->chan_ctx_queue;
 
 	list_add_tail(&chanctx->list, &chan_ctx_queue->queue);
 	chan_ctx_queue->cnt++;
 	if (chan_ctx_queue->cnt > MAX_CHANCTX_QUEUE_NUM) {
 		PHL_ERR("%s chan_ctx_queue cnt(%d) > 2\n", __func__, chan_ctx_queue->cnt);
 		_os_warn_on(1);
+		goto _exit;
 	}
+	psts = _phl_cc_band_map_set(phl_info, band_ctrl, chanctx);
 
-	return RTW_PHL_STATUS_SUCCESS;
+_exit:
+	return psts;
 }
 
 static enum rtw_phl_status
 _phl_chanctx_add_with_lock(struct phl_info_t *phl_info,
-			struct phl_queue *chan_ctx_queue,
+			struct hw_band_ctl_t *band_ctrl,
 			struct rtw_chan_ctx *chanctx)
 {
 	void *drv = phl_to_drvpriv(phl_info);
+	enum rtw_phl_status psts = RTW_PHL_STATUS_FAILURE;
 
 	if (!chanctx)
-		return RTW_PHL_STATUS_FAILURE;
+		return psts;
 
-	_os_spinlock(drv, &chan_ctx_queue->lock, _ps, NULL);
-	_phl_chanctx_add(phl_info, chan_ctx_queue, chanctx);
-	_os_spinunlock(drv, &chan_ctx_queue->lock, _ps, NULL);
-	return RTW_PHL_STATUS_SUCCESS;
+	_os_spinlock(drv, &band_ctrl->chan_ctx_queue.lock, _bh, NULL);
+	psts = _phl_chanctx_add(phl_info, band_ctrl, chanctx);
+	_os_spinunlock(drv, &band_ctrl->chan_ctx_queue.lock, _bh, NULL);
+	return psts;
 }
 
 static enum rtw_phl_status
 _phl_chanctx_del(struct phl_info_t *phl_info,
-			struct phl_queue *chan_ctx_queue,
+			struct hw_band_ctl_t *band_ctrl,
 			struct rtw_chan_ctx *chanctx)
 {
-	if (!chanctx)
-		return RTW_PHL_STATUS_FAILURE;
+	struct phl_queue *chan_ctx_queue;
+	enum rtw_phl_status psts = RTW_PHL_STATUS_FAILURE;
 
+	if (!chanctx)
+		return psts;
+
+	psts = _phl_cc_band_map_clr(phl_info,band_ctrl, chanctx);
+	if (psts == RTW_PHL_STATUS_FAILURE) {
+		PHL_ERR("%s _phl_cc_band_map_clr failed\n", __func__);
+		_os_warn_on(1);
+	}
+	chan_ctx_queue = &band_ctrl->chan_ctx_queue;
 	/*if (!list_empty(&chan_ctx_queue->queue)) {*/
 	if (chan_ctx_queue->cnt) {
 		list_del(&chanctx->list);
@@ -547,30 +705,35 @@ _phl_chanctx_del(struct phl_info_t *phl_info,
 		if (chan_ctx_queue->cnt < 0) {
 			PHL_ERR("%s chan_ctx_queue cnt(%d) < 0\n", __func__, chan_ctx_queue->cnt);
 			_os_warn_on(1);
+			goto _exit;
 		}
 	}
-	return RTW_PHL_STATUS_SUCCESS;
+	psts = RTW_PHL_STATUS_SUCCESS;
+_exit:
+	return psts;
 }
 
 static enum rtw_phl_status
 _phl_chanctx_del_with_lock(struct phl_info_t *phl_info,
-			struct phl_queue *chan_ctx_queue,
+			struct hw_band_ctl_t *band_ctrl,
 			struct rtw_chan_ctx *chanctx)
 {
 	void *drv = phl_to_drvpriv(phl_info);
+	enum rtw_phl_status psts = RTW_PHL_STATUS_FAILURE;
 
 	if (!chanctx)
-		return RTW_PHL_STATUS_FAILURE;
+		return psts;
 
-	_os_spinlock(drv, &chan_ctx_queue->lock, _ps, NULL);
-	_phl_chanctx_del(phl_info, chan_ctx_queue, chanctx);
-	_os_spinunlock(drv, &chan_ctx_queue->lock, _ps, NULL);
-	return RTW_PHL_STATUS_SUCCESS;
+	_os_spinlock(drv, &band_ctrl->chan_ctx_queue.lock, _bh, NULL);
+	psts = _phl_chanctx_del(phl_info, band_ctrl, chanctx);
+	_os_spinunlock(drv, &band_ctrl->chan_ctx_queue.lock, _bh, NULL);
+	return psts;
 }
 
 static inline enum rtw_phl_status
 _phl_chanctx_rmap_set(struct phl_info_t *phl_info,
 			struct rtw_wifi_role_t *wifi_role,
+			struct rtw_wifi_role_link_t *rlink,
 			struct phl_queue *chan_ctx_queue,
 			struct rtw_chan_ctx *chanctx)
 {
@@ -579,38 +742,42 @@ _phl_chanctx_rmap_set(struct phl_info_t *phl_info,
 	if (!chanctx)
 		return RTW_PHL_STATUS_FAILURE;
 
-	#ifdef DBG_CHCTX_RMAP
-	if (chanctx->role_map & BIT(ridx))
+	if (chanctx->role_map & BIT(ridx)) {
 		PHL_ERR("wifi_role idx(%d) has in chanctx->role_map(0x%02x)\n",
 				ridx, chanctx->role_map);
-	#endif
+		_os_warn_on(1);
+		return RTW_PHL_STATUS_FAILURE;
+	}
+
 	chanctx->role_map |= BIT(ridx);
-	wifi_role->chanctx = chanctx;
+	rlink->chanctx = chanctx;
 	return RTW_PHL_STATUS_SUCCESS;
 }
 
 static enum rtw_phl_status
 _phl_chanctx_rmap_set_with_lock(struct phl_info_t *phl_info,
-			struct rtw_wifi_role_t *wifi_role,
-			struct phl_queue *chan_ctx_queue,
-			struct rtw_chan_ctx *chanctx)
+                                struct rtw_wifi_role_t *wifi_role,
+                                struct rtw_wifi_role_link_t *rlink,
+                                struct phl_queue *chan_ctx_queue,
+                                struct rtw_chan_ctx *chanctx)
 {
 	void *drv = phl_to_drvpriv(phl_info);
 
 	if (!chanctx)
 		return RTW_PHL_STATUS_FAILURE;
 
-	_os_spinlock(drv, &chan_ctx_queue->lock, _ps, NULL);
-	_phl_chanctx_rmap_set(phl_info, wifi_role, chan_ctx_queue, chanctx);
-	_os_spinunlock(drv, &chan_ctx_queue->lock, _ps, NULL);
+	_os_spinlock(drv, &chan_ctx_queue->lock, _bh, NULL);
+	_phl_chanctx_rmap_set(phl_info, wifi_role, rlink, chan_ctx_queue, chanctx);
+	_os_spinunlock(drv, &chan_ctx_queue->lock, _bh, NULL);
 	return RTW_PHL_STATUS_SUCCESS;
 }
 
 static inline enum rtw_phl_status
 _phl_chanctx_rmap_clr(struct phl_info_t *phl_info,
-			struct rtw_wifi_role_t *wifi_role,
-			struct phl_queue *chan_ctx_queue,
-			struct rtw_chan_ctx *chanctx)
+                      struct rtw_wifi_role_t *wifi_role,
+                      struct rtw_wifi_role_link_t *rlink,
+                      struct phl_queue *chan_ctx_queue,
+                      struct rtw_chan_ctx *chanctx)
 {
 	u8 ridx = wifi_role->id;
 
@@ -621,7 +788,7 @@ _phl_chanctx_rmap_clr(struct phl_info_t *phl_info,
 	if (!(chanctx->role_map & BIT(ridx)))
 		PHL_ERR("ridx(%d) hasn't in chanctx->role_map(0x%02x)\n", ridx, chanctx->role_map);
 	#endif
-	wifi_role->chanctx = NULL;
+	rlink->chanctx = NULL;
 	chanctx->role_map &= ~BIT(ridx);
 
 	return RTW_PHL_STATUS_SUCCESS;
@@ -629,18 +796,19 @@ _phl_chanctx_rmap_clr(struct phl_info_t *phl_info,
 
 static enum rtw_phl_status
 _phl_chanctx_rmap_clr_with_lock(struct phl_info_t *phl_info,
-			struct rtw_wifi_role_t *wifi_role,
-			struct phl_queue *chan_ctx_queue,
-			struct rtw_chan_ctx *chanctx)
+                                struct rtw_wifi_role_t *wifi_role,
+                                struct rtw_wifi_role_link_t *rlink,
+                                struct phl_queue *chan_ctx_queue,
+                                struct rtw_chan_ctx *chanctx)
 {
 	void *drv = phl_to_drvpriv(phl_info);
 
 	if (!chanctx)
 		return RTW_PHL_STATUS_FAILURE;
 
-	_os_spinlock(drv, &chan_ctx_queue->lock, _ps, NULL);
-	_phl_chanctx_rmap_clr(phl_info, wifi_role, chan_ctx_queue, chanctx);
-	_os_spinunlock(drv, &chan_ctx_queue->lock, _ps, NULL);
+	_os_spinlock(drv, &chan_ctx_queue->lock, _bh, NULL);
+	_phl_chanctx_rmap_clr(phl_info, wifi_role, rlink, chan_ctx_queue, chanctx);
+	_os_spinunlock(drv, &chan_ctx_queue->lock, _bh, NULL);
 	return RTW_PHL_STATUS_SUCCESS;
 }
 
@@ -667,33 +835,34 @@ u8 phl_chanctx_get_rnum_with_lock(struct phl_info_t *phl_info,
 	if (!chanctx)
 		return role_num;
 
-	_os_spinlock(drv, &chan_ctx_queue->lock, _ps, NULL);
+	_os_spinlock(drv, &chan_ctx_queue->lock, _bh, NULL);
 	role_num = phl_chanctx_get_rnum(phl_info, chan_ctx_queue, chanctx);
-	_os_spinunlock(drv, &chan_ctx_queue->lock, _ps, NULL);
+	_os_spinunlock(drv, &chan_ctx_queue->lock, _bh, NULL);
 	return role_num;
 }
 
 /**
  * _phl_is_chbw_grouped - test if the two ch settings can be grouped together
- * @ch_a: ch of set a
- * @bw_a: bw of set a
- * @offset_a: offset of set a
- * @ch_b: ch of set b
- * @bw_b: bw of set b
- * @offset_b: offset of set b
+ * @chandef_a : chandef of set a
+ * @chandef_b : chandef of set b
  */
-static bool _phl_is_chbw_grouped(u8 ch_a, enum channel_width bw_a, enum chan_offset offset_a
-			 , u8 ch_b, enum channel_width bw_b, enum chan_offset offset_b)
+static bool _phl_is_chbw_grouped(struct rtw_chan_def *chandef_a,
+	struct rtw_chan_def *chandef_b)
 {
 	bool is_grouped = false;
 
-	if (ch_a != ch_b) {
+	if (chandef_a->band != chandef_b->band)
+		goto exit;
+
+	if (chandef_a->chan != chandef_b->chan) {
 		/* ch is different */
 		goto exit;
-	} else if ((bw_a == CHANNEL_WIDTH_40 || bw_a == CHANNEL_WIDTH_80)
-		   && (bw_b == CHANNEL_WIDTH_40 || bw_b == CHANNEL_WIDTH_80)
+	} else if ((chandef_a->bw == CHANNEL_WIDTH_40 || chandef_a->bw == CHANNEL_WIDTH_80 ||
+		     chandef_a->bw == CHANNEL_WIDTH_160)
+		   && (chandef_b->bw == CHANNEL_WIDTH_40 || chandef_b->bw == CHANNEL_WIDTH_80 ||
+		       chandef_b->bw == CHANNEL_WIDTH_160)
 		  ) {
-		if (offset_a != offset_b)
+		if (chandef_a->offset != chandef_b->offset)
 			goto exit;
 	}
 
@@ -710,267 +879,209 @@ _phl_feature_check(struct rtw_phl_com_t *phl_com, u8 flg)
 	return (phl_com->dev_cap.hw_sup_flags & flg) ? true : false;
 }
 
-static u8 _phl_get_offset_by_chbw(u8 ch, enum channel_width bw, enum chan_offset *r_offset)
+static void _phl_upt_offset_by_chbw_24g(struct rtw_chan_def *n_chdef)
 {
 	u8 valid = 1;
 	enum chan_offset offset = CHAN_OFFSET_NO_EXT;
 
-	if (bw == CHANNEL_WIDTH_20)
-		goto exit;
-
-	if (bw >= CHANNEL_WIDTH_80 && ch <= 14) {
+	if (n_chdef->bw >= CHANNEL_WIDTH_80
+		|| n_chdef->chan < 1 || n_chdef->chan > 14
+	) {
+		PHL_ERR("%s bw:%d, ch:%d - check failed\n", __func__, n_chdef->bw, n_chdef->chan);
 		valid = 0;
 		goto exit;
 	}
 
-	if (ch >= 1 && ch <= 4)
+	if (n_chdef->bw == CHANNEL_WIDTH_20)
+		goto exit;
+
+	if (n_chdef->chan >= 1 && n_chdef->chan <= 4) {
 		offset = CHAN_OFFSET_UPPER;
-	else if (ch >= 5 && ch <= 9) {
-		if (*r_offset == CHAN_OFFSET_UPPER || *r_offset == CHAN_OFFSET_LOWER)
-			offset = *r_offset; /* both lower and upper is valid, obey input value */
+	}
+	else if (n_chdef->chan >= 5 && n_chdef->chan <= 9) {
+		if (n_chdef->offset == CHAN_OFFSET_UPPER || n_chdef->offset == CHAN_OFFSET_LOWER)
+			offset = n_chdef->offset; /* both lower and upper is valid, obey input value */
 		else
-			offset = CHAN_OFFSET_LOWER; /* default use upper */
-	} else if (ch >= 10 && ch <= 13)
+			offset = CHAN_OFFSET_LOWER; /* default use primary upper */
+	} else if (n_chdef->chan >= 10 && n_chdef->chan <= 13) {
 		offset = CHAN_OFFSET_LOWER;
-	else if (ch == 14) {
+	}
+	else {
 		valid = 0; /* ch14 doesn't support 40MHz bandwidth */
 		goto exit;
-	} else if (ch >= 36 && ch <= 177) {
-		switch (ch) {
-		case 36:
-		case 44:
-		case 52:
-		case 60:
-		case 100:
-		case 108:
-		case 116:
-		case 124:
-		case 132:
-		case 140:
-		case 149:
-		case 157:
-		case 165:
-		case 173:
-			offset = CHAN_OFFSET_UPPER;
-			break;
-		case 40:
-		case 48:
-		case 56:
-		case 64:
-		case 104:
-		case 112:
-		case 120:
-		case 128:
-		case 136:
-		case 144:
-		case 153:
-		case 161:
-		case 169:
-		case 177:
-			offset = CHAN_OFFSET_LOWER;
-			break;
-		default:
-			valid = 0;
-			break;
-		}
-	} else
-		valid = 0;
-
-exit:
-	if (valid && r_offset)
-		*r_offset = offset;
-	return valid;
-}
-
-/**
- * _phl_adjust_chandef - obey g_ch, adjust g_bw, g_offset, bw, offset
- * @req_ch: pointer of the request ch, may be modified further
- * @req_bw: pointer of the request bw, may be modified further
- * @req_offset: pointer of the request offset, may be modified further
- * @g_ch: pointer of the ongoing group ch
- * @g_bw: pointer of the ongoing group bw, may be modified further
- * @g_offset: pointer of the ongoing group offset, may be modified further
- */
-static void _phl_adjust_chandef(u8 *req_ch, enum channel_width *req_bw, enum chan_offset *req_offset,
-		   u8 *g_ch, enum channel_width *g_bw, enum chan_offset *g_offset)
-{
-
-	*req_ch = *g_ch;
-
-	if (*req_bw == CHANNEL_WIDTH_80 && *g_ch <= 14) {
-		/*2.4G ch, downgrade to 40Mhz */
-		*req_bw = CHANNEL_WIDTH_40;
 	}
 
-	switch (*req_bw) {
-	case CHANNEL_WIDTH_80:
-		if (*g_bw == CHANNEL_WIDTH_40 || *g_bw == CHANNEL_WIDTH_80)
-			*req_offset = *g_offset;
-		else if (*g_bw == CHANNEL_WIDTH_20)
-			_phl_get_offset_by_chbw(*req_ch, *req_bw, req_offset);
+exit:
+	if (valid)
+		n_chdef->offset = offset;
 
-		if (*req_offset == CHAN_OFFSET_NO_EXT) {
-			PHL_ERR("%s req 80MHz BW without offset, down to 20MHz\n", __func__);
-			_os_warn_on(1);
-			*req_bw = CHANNEL_WIDTH_20;
-		}
+}
+static void _phl_upt_offset_by_chbw_5g(struct rtw_chan_def *n_chdef)
+{
+	u8 valid = 1;
+	enum chan_offset offset = CHAN_OFFSET_NO_EXT;
+
+	if (n_chdef->chan < 36 || n_chdef->chan > 177) {
+		valid = 0;
+		goto exit;
+	}
+
+	switch (n_chdef->chan) {
+	case 36:
+	case 44:
+	case 52:
+	case 60:
+	case 100:
+	case 108:
+	case 116:
+	case 124:
+	case 132:
+	case 140:
+	case 149:
+	case 157:
+	case 165:
+	case 173:
+		if (n_chdef->bw >= CHANNEL_WIDTH_40 && n_chdef->bw <= CHANNEL_WIDTH_160)
+			offset = CHAN_OFFSET_UPPER;
 		break;
-	case CHANNEL_WIDTH_40:
-		if (*g_bw == CHANNEL_WIDTH_40 || *g_bw == CHANNEL_WIDTH_80)
-			*req_offset = *g_offset;
-		else if (*g_bw == CHANNEL_WIDTH_20)
-			_phl_get_offset_by_chbw(*req_ch, *req_bw, req_offset);
+	case 40:
+	case 48:
+	case 56:
+	case 64:
+	case 104:
+	case 112:
+	case 120:
+	case 128:
+	case 136:
+	case 144:
+	case 153:
+	case 161:
+	case 169:
+	case 177:
+		if (n_chdef->bw >= CHANNEL_WIDTH_40 && n_chdef->bw <= CHANNEL_WIDTH_160)
+			offset = CHAN_OFFSET_LOWER;
+		break;
+	default:
+		valid = 0;
+		break;
+	}
 
-		if (*req_offset == CHAN_OFFSET_NO_EXT) {
-			PHL_ERR("%s req 40MHz BW without offset, down to 20MHz\n", __func__);
+exit:
+	if (valid)
+		n_chdef->offset = offset;
+}
+static void _phl_upt_offset_by_chbw_6g(struct rtw_chan_def *n_chdef)
+{
+	if (n_chdef->chan >= 1 && n_chdef->chan <= 253) {
+		u8 mod8 = n_chdef->chan % 8;
+
+		if (mod8 == 1) {
+			if (n_chdef->bw == CHANNEL_WIDTH_20)
+				n_chdef->offset = CHAN_OFFSET_NO_EXT;
+			else
+				n_chdef->offset = CHAN_OFFSET_UPPER;
+		}
+		if (mod8 == 5) {
+			if (n_chdef->bw == CHANNEL_WIDTH_20)
+				n_chdef->offset = CHAN_OFFSET_NO_EXT;
+			else
+				n_chdef->offset = CHAN_OFFSET_LOWER;
+		}
+	}
+}
+
+static void _phl_upt_offset_by_chbw(struct rtw_chan_def *n_chdef)
+{
+	if (n_chdef->band == BAND_ON_24G)
+		_phl_upt_offset_by_chbw_24g(n_chdef);
+	else if (n_chdef->band == BAND_ON_5G)
+		_phl_upt_offset_by_chbw_5g(n_chdef);
+	else if (n_chdef->band == BAND_ON_6G)
+		_phl_upt_offset_by_chbw_6g(n_chdef);
+}
+
+static void
+_phl_adjust_chandef(struct rtw_chan_def *n_chdef,
+				struct rtw_chan_def *g_chdef,
+				bool g_chdef_upt)
+{
+
+	n_chdef->band = g_chdef->band;
+	n_chdef->chan = g_chdef->chan;
+
+	if ((g_chdef->band == BAND_ON_24G) &&
+	    (n_chdef->bw == CHANNEL_WIDTH_80 || n_chdef->bw == CHANNEL_WIDTH_160)) {
+		/*2.4G ch, downgrade to 40Mhz */
+		n_chdef->bw = CHANNEL_WIDTH_40;
+	}
+
+	switch (n_chdef->bw) {
+	case CHANNEL_WIDTH_160:
+	case CHANNEL_WIDTH_80:
+	case CHANNEL_WIDTH_40:
+		if (g_chdef->bw == CHANNEL_WIDTH_40 || g_chdef->bw == CHANNEL_WIDTH_80 ||
+		    g_chdef->bw == CHANNEL_WIDTH_160)
+			n_chdef->offset = g_chdef->offset;
+		else if (g_chdef->bw == CHANNEL_WIDTH_20)
+			_phl_upt_offset_by_chbw(n_chdef);
+
+		if (n_chdef->offset == CHAN_OFFSET_NO_EXT) {
+			if (n_chdef->bw == CHANNEL_WIDTH_160)
+				PHL_ERR("%s req 160MHz BW without offset, down to 20MHz\n", __func__);
+			else if (n_chdef->bw == CHANNEL_WIDTH_80)
+				PHL_ERR("%s req 80MHz BW without offset, down to 20MHz\n", __func__);
+			else if (n_chdef->bw == CHANNEL_WIDTH_40)
+				PHL_ERR("%s req 40MHz BW without offset, down to 20MHz\n", __func__);
 			_os_warn_on(1);
-			*req_bw = CHANNEL_WIDTH_20;
+			n_chdef->bw = CHANNEL_WIDTH_20;
 		}
 		break;
 	case CHANNEL_WIDTH_20:
-		*req_offset = CHAN_OFFSET_NO_EXT;
+		n_chdef->offset = CHAN_OFFSET_NO_EXT;
 		break;
 	default:
-		PHL_ERR("%s req unsupported BW:%u\n", __func__, *req_bw);
+		PHL_ERR("%s req unsupported BW:%u\n", __func__, n_chdef->bw);
 		_os_warn_on(1);
+		break;
 	}
 
-	if (*req_bw > *g_bw) {
-		*g_bw = *req_bw;
-		*g_offset = *req_offset;
+	if (!g_chdef_upt)
+		return;
+
+	if (n_chdef->bw > g_chdef->bw) {
+		g_chdef->bw = n_chdef->bw;
+		g_chdef->offset = n_chdef->offset;
 	}
 }
 
 static enum rtw_phl_status
 _phl_chanctx_create(struct phl_info_t *phl_info,
-		struct rtw_wifi_role_t *wifi_role,
-		enum band_type band, u8 chan,
-		enum channel_width bw,	enum chan_offset offset)
+                    struct rtw_wifi_role_t *wifi_role,
+                    struct rtw_wifi_role_link_t *rlink,
+                    struct rtw_chan_def *new_chdef)
 {
 	enum rtw_phl_status phl_sts = RTW_PHL_STATUS_FAILURE;
 	void *drv = phl_to_drvpriv(phl_info);
 	struct rtw_chan_ctx *chanctx = NULL;
 	struct mr_ctl_t *mr_ctl = phlcom_to_mr_ctrl(phl_info->phl_com);
-	struct hw_band_ctl_t *band_ctrl = &(mr_ctl->band_ctrl[wifi_role->hw_band]);
-
+	struct hw_band_ctl_t *band_ctrl = &(mr_ctl->band_ctrl[rlink->hw_band]);
 	chanctx = _os_kmem_alloc(drv, sizeof(struct rtw_chan_ctx));
 	if (chanctx == NULL) {
 		PHL_ERR("alloc chanctx failed\n");
 		goto _exit;
 	}
 
-	chanctx->chan_def.band = band;
-	chanctx->chan_def.chan = chan;
-	chanctx->chan_def.bw = bw;
-	chanctx->chan_def.offset = offset;
-	chanctx->chan_def.center_ch = rtw_phl_get_center_ch(chan, bw, offset);
-	phl_sts = _phl_chanctx_add_with_lock(phl_info, &band_ctrl->chan_ctx_queue, chanctx);
+	_os_mem_cpy(drv, &chanctx->chan_def, new_chdef, sizeof(struct rtw_chan_def));
+	phl_sts = _phl_chanctx_add_with_lock(phl_info, band_ctrl, chanctx);
 
 	if (phl_sts == RTW_PHL_STATUS_SUCCESS)
-		_phl_chanctx_rmap_set_with_lock(phl_info, wifi_role,
-					&band_ctrl->chan_ctx_queue, chanctx);
+		_phl_chanctx_rmap_set_with_lock(phl_info,
+		                                wifi_role,
+		                                rlink,
+		                                &band_ctrl->chan_ctx_queue,
+		                                chanctx);
 _exit:
 	return phl_sts;
-}
-bool phl_chanctx_add(struct phl_info_t *phl_info, struct rtw_wifi_role_t *wifi_role,
-		u8 *chan, enum channel_width *bw, enum chan_offset *offset)
-{
-	struct rtw_phl_com_t *phl_com = phl_info->phl_com;
-	enum rtw_phl_status phl_sts = RTW_PHL_STATUS_FAILURE;
-	void *drv = phl_to_drvpriv(phl_info);
-	struct mr_ctl_t *mr_ctl = phlcom_to_mr_ctrl(phl_com);
-	struct hw_band_ctl_t *band_ctrl = &(mr_ctl->band_ctrl[wifi_role->hw_band]);
-	struct rtw_chan_ctx *chanctx = NULL;
-	struct rtw_chan_def *chandef = NULL;
-	_os_list *chan_ctx_list = &band_ctrl->chan_ctx_queue.queue;
-	bool is_ch_grouped = false;
-	enum band_type band = (*chan > 14) ? BAND_ON_5G : BAND_ON_24G;
-	int chanctx_num = 0;
-
-	if (wifi_role == NULL) {
-		PHL_ERR("%s wrole == NULL\n", __func__);
-		goto _exit;
-	}
-
-	PHL_INFO("%s new chan_def - hw_band_idx:%d, chan:%d, bw:%d, offset:%d\n",
-		__func__, wifi_role->hw_band, *chan, *bw, *offset);
-
-	chanctx_num = phl_mr_get_chanctx_num(phl_info, band_ctrl);
-	if (chanctx_num == 0) {
-		phl_sts = _phl_chanctx_create(phl_info, wifi_role,
-						band, *chan, *bw, *offset);
-		if (phl_sts != RTW_PHL_STATUS_SUCCESS) {
-			PHL_ERR("%s failed\n", __func__);
-			_os_warn_on(1);
-		}
-		else {
-			is_ch_grouped = true;
-		}
-	}
-	else {
-		_os_spinlock(drv, &band_ctrl->chan_ctx_queue.lock, _ps, NULL);
-		phl_list_for_loop(chanctx, struct rtw_chan_ctx, chan_ctx_list, list) {
-			chandef = &chanctx->chan_def;
-			is_ch_grouped = _phl_is_chbw_grouped(
-					chandef->chan, chandef->bw, chandef->offset,
-					*chan, *bw, *offset);
-			if (is_ch_grouped) {
-				_phl_adjust_chandef(chan, bw, offset,
-					&chandef->chan, &chandef->bw, &chandef->offset);
-
-				*chan = chandef->chan;
-				*bw = chandef->bw;
-				*offset = chandef->offset;
-				PHL_INFO("%s grouped chan_def - hw_band_idx:%d, chan:%d, bw:%d, offset:%d\n",
-					__func__, wifi_role->hw_band, *chan, *bw, *offset);
-				_phl_chanctx_rmap_set(phl_info, wifi_role,
-					&band_ctrl->chan_ctx_queue, chanctx);
-				break;
-			}
-		}
-		_os_spinunlock(drv, &band_ctrl->chan_ctx_queue.lock, _ps, NULL);
-
-		if (is_ch_grouped == false) { /*MCC or DBCC*/
-			PHL_INFO("%s chan:%d, bw:%d, offset:%d could not grouped\n",
-				__func__, *chan, *bw, *offset);
-
-			#ifdef CONFIG_MCC_SUPPORT
-			if (phl_com->dev_cap.mcc_sup == false) {
-				PHL_ERR("%s don't support MCC\n", __func__);
-				goto _exit;
-			}
-
-			if (chanctx_num >= 2) {
-				PHL_ERR("chan_ctx cnt(%d) >= 2\n", chanctx_num);
-				/*DBCC ?*/
-				goto _exit;
-			}
-			if (band == chandef->band) { /*MCC*/
-				phl_sts = _phl_chanctx_create(phl_info, wifi_role,
-							band, *chan, *bw, *offset);
-				if (phl_sts == RTW_PHL_STATUS_SUCCESS)
-					is_ch_grouped = true;
-			} else {
-				/*DBCC*/
-				#ifdef CONFIG_DBCC_SUPPORT
-				if (phl_com->dev_cap.dbcc_sup == true) {
-					PHL_INFO("%s support DBC\n", __func__);
-					goto _exit;
-				}
-				#endif
-				/*MCC*/
-				phl_sts = _phl_chanctx_create(phl_info, wifi_role,
-							band, *chan, *bw, *offset);
-				if (phl_sts == RTW_PHL_STATUS_SUCCESS)
-					is_ch_grouped = true;
-
-			}
-			#endif
-		}
-	}
-
-_exit:
-	return is_ch_grouped;
 }
 
 enum rtw_phl_status
@@ -987,7 +1098,7 @@ phl_chanctx_free(struct phl_info_t *phl_info, struct hw_band_ctl_t *band_ctl)
 
 	PHL_INFO("%s band_idx:%d chctx_num:%d\n", __func__, band_ctl->id, chanctx_num);
 	do {
-		_os_spinlock(drv, &band_ctl->chan_ctx_queue.lock, _ps, NULL);
+		_os_spinlock(drv, &band_ctl->chan_ctx_queue.lock, _bh, NULL);
 		if (list_empty(&chan_ctx_queue->queue)) {
 			chanctx = NULL;
 		} else {
@@ -996,7 +1107,7 @@ phl_chanctx_free(struct phl_info_t *phl_info, struct hw_band_ctl_t *band_ctl)
 			list_del(&chanctx->list);
 			chan_ctx_queue->cnt--;
 		}
-		_os_spinunlock(drv, &band_ctl->chan_ctx_queue.lock, _ps, NULL);
+		_os_spinunlock(drv, &band_ctl->chan_ctx_queue.lock, _bh, NULL);
 
 		if (chanctx) {
 			_os_kmem_free(drv, chanctx, sizeof(struct rtw_chan_ctx));
@@ -1014,69 +1125,441 @@ u8 phl_get_chanctx_rolemap(struct phl_info_t *phl_info, u8 band_idx)
 	struct rtw_chan_ctx *chanctx = NULL;
 	u8 role_map =0;
 
-	_os_spinlock(drv, &band_ctrl->chan_ctx_queue.lock, _ps, NULL);
+	_os_spinlock(drv, &band_ctrl->chan_ctx_queue.lock, _bh, NULL);
 	phl_list_for_loop(chanctx, struct rtw_chan_ctx, chan_ctx_list, list) {
 		role_map |= chanctx->role_map;
 	}
-	_os_spinunlock(drv, &band_ctrl->chan_ctx_queue.lock, _ps, NULL);
+	_os_spinunlock(drv, &band_ctrl->chan_ctx_queue.lock, _bh, NULL);
 
 	return role_map;
 }
+static bool
+is_ch_in_same_band(struct rtw_chan_def *chdef_a, struct rtw_chan_def *chdef_b)
+{
+	bool ch_in_same_band = false;
 
+	if (chdef_a->band == chdef_b->band) {
+		if (BAND_2GHZ(chdef_a->band)) {
+			PHL_INFO("%s - case MC-SB : 2G(%d)+2G(%d)\n",
+				__func__, chdef_a->chan, chdef_b->chan);
+			ch_in_same_band = true;
+		} else if (BAND_5GHZ(chdef_b->band)) {
+			if (CH_IN_SAME_5G_BAND(chdef_a->chan, chdef_b->chan)) {
+				PHL_INFO("%s - case MC-SB : 5G(%d)+5G(%d)\n",
+					__func__, chdef_a->chan, chdef_b->chan);
+				ch_in_same_band = true;
+			}
+		} else if (BAND_6GHZ(chdef_b->band)) {
+			if (CH_IN_SAME_6G_BAND(chdef_a->chan, chdef_b->chan)) {
+				PHL_INFO("%s - case MC-SB : 6G(%d)+6G(%d)\n",
+					__func__, chdef_a->chan, chdef_b->chan);
+				ch_in_same_band = true;
+			}
+		}
+	}
+	return ch_in_same_band;
+}
 
-bool rtw_phl_chanctx_chk(void *phl, struct rtw_wifi_role_t *wifi_role,
-		u8 chan, enum channel_width bw, enum chan_offset offset)
+static bool
+is_ch_in_interference_band(struct rtw_chan_def *chdef_a, struct rtw_chan_def *chdef_b)
+{
+	bool ch_in_same_band = false;
+
+	if (BAND_5GHZ(chdef_a->band) && BAND_5GHZ(chdef_b->band)) {
+		PHL_INFO("%s - case MC-MB : 5G(%d)+5G(%d)\n",
+			__func__, chdef_a->chan, chdef_b->chan);
+		ch_in_same_band = true;
+	} else if (BAND_6GHZ(chdef_a->band) && BAND_6GHZ(chdef_b->band)) {
+		PHL_INFO("%s - case MC-MB : 6G(%d)+6G(%d)\n",
+			__func__, chdef_a->chan, chdef_b->chan);
+		ch_in_same_band = true;
+	} else if (BAND_5GHZ(chdef_a->band) && BAND_6GHZ(chdef_b->band)) {
+		PHL_INFO("%s - case MC-MB : 5G(%d)+6G(%d)\n",
+			__func__, chdef_a->chan, chdef_b->chan);
+		ch_in_same_band = true;
+	} else if (BAND_6GHZ(chdef_a->band) && BAND_5GHZ(chdef_b->band)) {
+		PHL_INFO("%s - case MC-MB : 6G(%d)+5G(%d)\n",
+			__func__, chdef_a->chan, chdef_b->chan);
+		ch_in_same_band = true;
+	}
+	return ch_in_same_band;
+}
+
+static void _phl_dump_mr_cc_info(struct phl_info_t *phl_info,
+					struct rtw_mr_chctx_info *mr_cc_info)
+{
+	PHL_INFO("[CC-INFO] is dual band:%s\n", (mr_cc_info->is_db) ? "Y" : "N");
+	PHL_INFO("[CC-INFO] cur_band_idx:%d\n", mr_cc_info->cur_band_idx);
+	PHL_INFO("[CC-INFO] role_num:%d\n", mr_cc_info->role_num);
+	PHL_INFO("[CC-INFO] chctx_num:%d\n", mr_cc_info->chctx_num);
+
+	PHL_INFO("[CC-INFO] chctx_band_map:0x%04x\n", mr_cc_info->chctx_band_map);
+	phl_dump_cc_band_map(phl_info, mr_cc_info->chctx_band_map);
+
+	if (mr_cc_info->sugg_opmode == MR_OP_SWR)
+		PHL_INFO("[CC-INFO] suggest opmode:%s\n", "SINGLE ROLE");
+	else if (mr_cc_info->sugg_opmode == MR_OP_SCC)
+		PHL_INFO("[CC-INFO] suggest opmode:%s\n", "SCC");
+	else if (mr_cc_info->sugg_opmode == MR_OP_MCC)
+		PHL_INFO("[CC-INFO] suggest opmode:%s\n", "MCC");
+	else if (mr_cc_info->sugg_opmode == MR_OP_DBCC)
+		PHL_INFO("[CC-INFO] suggest opmode:%s\n", "DBCC");
+	else
+		PHL_INFO("[CC-INFO] suggest opmode:%s\n", "NON");
+}
+
+bool rtw_phl_chanctx_chk_by_band(void *phl,
+                         u8 band_idx,
+                         struct rtw_chan_def *new_chdef,
+                         struct rtw_mr_chctx_info *mr_cc_info)
 {
 	struct phl_info_t *phl_info = (struct phl_info_t *)phl;
 	struct rtw_phl_com_t *phl_com = phl_info->phl_com;
 	void *drv = phl_to_drvpriv(phl_info);
 	struct mr_ctl_t *mr_ctl = phlcom_to_mr_ctrl(phl_com);
-	u8 band_idx = wifi_role->hw_band;
 	bool is_ch_group = false;
 	struct hw_band_ctl_t *band_ctrl = &(mr_ctl->band_ctrl[band_idx]);
 	int chanctx_num = 0;
 	struct rtw_chan_ctx *chanctx = NULL;
 	struct rtw_chan_def *chandef = NULL;
+	enum mr_op_mode sop_mode = MR_OP_NONE;
+	u8 band_role_num = 0;
 
-	if (chan == 0) {
+	if (new_chdef && new_chdef->chan == 0) {
 		PHL_ERR("%s req chan = 0 \n", __func__);
+		_os_warn_on(1);
 		goto _exit;
 	}
 
-	/*status check*/
-	if (mr_ctl->is_sb) {
-		if (band_idx == 1) {
-			PHL_ERR("wrole:%d in band_idx:%d\n", wifi_role->id, band_idx);
-			_os_warn_on(1);
-			goto _exit;
+	#if 0 /*status check for debug*/
+	if (mr_ctl->is_db == true) { /*in DBCC*/
+		struct hw_band_ctl_t *tmp_band_ctrl = NULL;
+		u8 band_idx;
+
+		for (band_idx = 0; band_idx < HW_BAND_MAX; band_idx++) {
+			tmp_band_ctrl = &mr_ctl->band_ctrl[band_idx];
+			band_role_num = phl_mr_get_role_num(phl_info, tmp_band_ctrl);
+			chanctx_num = phl_mr_get_chanctx_num(phl_info, tmp_band_ctrl);
+			PHL_INFO("BAND_%d : role num:%d, chctx num:%d\n",
+				  band_idx, band_role_num, chanctx_num);
 		}
 	}
+	#endif
+
+	band_role_num = phl_mr_get_role_num(phl_info, band_ctrl);
 
 	chanctx_num = phl_mr_get_chanctx_num(phl_info, band_ctrl);
 
-	if (chanctx_num > 0) {
-		_os_spinlock(drv, &band_ctrl->chan_ctx_queue.lock, _ps, NULL);
+	if (new_chdef) {
+		if (chanctx_num == 0) {
+			is_ch_group = true;
+			sop_mode = MR_OP_SWR;
+			goto _exit;
+		}
+
+		_os_spinlock(drv, &band_ctrl->chan_ctx_queue.lock, _bh, NULL);
 		phl_list_for_loop(chanctx, struct rtw_chan_ctx, &band_ctrl->chan_ctx_queue.queue, list) {
 			chandef = &chanctx->chan_def;
-			is_ch_group = _phl_is_chbw_grouped(
-					chandef->chan, chandef->bw, chandef->offset,
-					chan, bw, offset);
+			is_ch_group = _phl_is_chbw_grouped(chandef, new_chdef);
 			if (is_ch_group)
 				break;
 		}
-		/* consider MCC case (support max 2 diff ch for MCC currently) */
-		#ifdef CONFIG_MCC_SUPPORT
-			if (phl_com->dev_cap.mcc_sup == true && is_ch_group == false && chanctx_num < 2) {
-				is_ch_group = true;
+		_os_spinunlock(drv, &band_ctrl->chan_ctx_queue.lock, _bh, NULL);
+
+		if (is_ch_group == true) {/* SCC or MCC */
+			/*current chanctx_num*/
+			if (chanctx_num == 1) {
+				sop_mode = MR_OP_SCC;
 			}
+			else if (chanctx_num == 2) {
+				#ifdef CONFIG_MCC_SUPPORT
+				if (phl_com->dev_cap.mcc_sup == true) {
+					sop_mode = MR_OP_MCC;
+				} else
+				#endif
+				{
+					PHL_ERR("Don't support MCC, but cur chanctx num = 2 ??\n");
+					_os_warn_on(1);
+				}
+			}
+			else {
+				PHL_ERR("%s Unknow state - chan can grouped, ch-ctx num:%d\n",
+							__func__, chanctx_num);
+				_os_warn_on(1);
+			}
+			goto _exit;
+		}
+
+		if (chanctx_num >= 2) {
+			PHL_ERR("current chan_ctx num(%d) >= 2, not support over 3xchan-set on one band\n",
+									chanctx_num);
+			#ifdef CONFIG_DBCC_SUPPORT
+			/*TODO : Consider scenario - [MCC] 2G-CH6+5G-CH149, New ch is 2G-CH11*/
+			if (phl_com->dev_cap.mcmb_skip_dbcc == false && phl_com->dev_cap.dbcc_sup == true)
+				sop_mode = MR_OP_DBCC;
+			#endif
+			goto _exit;
+		}
+
+		/* MCC,condition- chanctx_num == 1 */
+		/* MC-SB */
+		if (is_ch_in_same_band(new_chdef, chandef))
+			goto _mcc_hdl;
+
+		/* MC-MB - MCC */
+		#ifdef CONFIG_DBCC_SUPPORT
+		if (phl_com->dev_cap.mcmb_itf_ctrl == false &&
+		    is_ch_in_interference_band(new_chdef, chandef))
+			goto _mcc_hdl;
+
+		/* MC-MB - DBCC */
+		if (phl_com->dev_cap.mcmb_skip_dbcc == false && phl_com->dev_cap.dbcc_sup == true) {
+			PHL_INFO("%s support DBCC\n", __func__);
+			/* suggest DBCC */
+			sop_mode = MR_OP_DBCC;
+			goto _exit;
+		}
 		#endif
-		_os_spinunlock(drv, &band_ctrl->chan_ctx_queue.lock, _ps, NULL);
+
+		_mcc_hdl:
+		/* MCC */
+		#ifdef CONFIG_MCC_SUPPORT
+		if (phl_com->dev_cap.mcc_sup == true) {
+			PHL_INFO("%s support MCC\n", __func__);
+			is_ch_group = true;
+			sop_mode = MR_OP_MCC;
+		} else
+		#endif
+		{
+			PHL_ERR("%s don't support MCC\n", __func__);
+		}
 	} else {
-		is_ch_group = true;
+		if (mr_ctl->is_db == false) { /*stay in single band*/
+			sop_mode = band_ctrl->op_mode;
+		} else {/*stay in dual band*/
+			#ifdef CONFIG_DBCC_SUPPORT
+			if (band_ctrl->op_mode == MR_OP_NONE)
+				sop_mode = MR_OP_DBCC;
+			#endif
+		}
 	}
 _exit:
+	if (mr_cc_info) {
+		mr_cc_info->is_db = mr_ctl->is_db;
+		mr_cc_info->cur_band_idx = band_idx;
+		mr_cc_info->role_num = band_role_num;
+		mr_cc_info->chctx_num = (u8)chanctx_num;
+		mr_cc_info->chctx_band_map = band_ctrl->chctx_band_map;
+		mr_cc_info->sugg_opmode = sop_mode;
+		_phl_dump_mr_cc_info(phl_info, mr_cc_info);
+	}
+
 	PHL_DUMP_MR_EX(phl_info);
 	return is_ch_group;
+}
+bool rtw_phl_chanctx_chk(void *phl,
+                         struct rtw_wifi_role_t *wifi_role,
+                         struct rtw_wifi_role_link_t *rlink,
+                         struct rtw_chan_def *new_chdef,
+                         struct rtw_mr_chctx_info *mr_cc_info)
+{
+	return rtw_phl_chanctx_chk_by_band(phl, rlink->hw_band, new_chdef, mr_cc_info);
+}
+
+bool rtw_phl_adjust_chandef(void *phl,
+				  struct rtw_wifi_role_link_t *rlink,
+				  struct rtw_chan_def *new_chdef)
+{
+	bool is_ch_grouped = false;
+	struct phl_info_t *phl_info = (struct phl_info_t *)phl;
+	void *drv = phl_to_drvpriv(phl_info);
+	u8 band_idx = rlink->hw_band;
+	struct hw_band_ctl_t *band_ctrl = get_band_ctrl(phl, band_idx);
+	_os_list *chan_ctx_list = &band_ctrl->chan_ctx_queue.queue;
+	struct rtw_chan_ctx *chanctx = NULL;
+	struct rtw_chan_def *chandef = NULL;
+
+	_os_spinlock(drv, &band_ctrl->chan_ctx_queue.lock, _bh, NULL);
+	phl_list_for_loop(chanctx, struct rtw_chan_ctx, chan_ctx_list, list) {
+		chandef = &chanctx->chan_def;
+		is_ch_grouped = _phl_is_chbw_grouped(chandef, new_chdef);
+		if (is_ch_grouped) {
+			_phl_adjust_chandef(new_chdef, chandef, false);
+			break;
+		}
+	}
+	_os_spinunlock(drv, &band_ctrl->chan_ctx_queue.lock, _bh, NULL);
+
+	return is_ch_grouped;
+}
+
+static bool phl_chanctx_add(struct phl_info_t *phl_info,
+                            struct rtw_wifi_role_t *wifi_role,
+                            struct rtw_wifi_role_link_t *rlink,
+                            struct rtw_chan_def *new_chdef,
+                            struct rtw_mr_chctx_info *mr_cc_info)
+{
+	enum rtw_phl_status phl_sts = RTW_PHL_STATUS_FAILURE;
+	struct rtw_phl_com_t *phl_com = phl_info->phl_com;
+	void *drv = phl_to_drvpriv(phl_info);
+	struct mr_ctl_t *mr_ctl = phlcom_to_mr_ctrl(phl_com);
+	u8 band_idx = rlink->hw_band;
+	struct hw_band_ctl_t *band_ctrl = &(mr_ctl->band_ctrl[band_idx]);
+	struct rtw_chan_ctx *chanctx = NULL;
+	struct rtw_chan_def *chandef = NULL;
+	_os_list *chan_ctx_list = &band_ctrl->chan_ctx_queue.queue;
+	bool is_ch_grouped = false;
+	bool rmap_chk_fail = false;
+	enum mr_op_mode sop_mode = MR_OP_NONE;
+	u8 band_role_num = 0;
+	int chanctx_num = 0;
+
+	if (wifi_role == NULL) {
+		PHL_ERR("%s wrole == NULL\n", __func__);
+		goto _exit;
+	}
+
+	PHL_INFO("%s new chan_def - hw_band_idx:%d, band:%u, chan:%d, bw:%d, offset:%d\n",
+		__func__, rlink->hw_band, new_chdef->band,
+		new_chdef->chan, new_chdef->bw, new_chdef->offset);
+
+	band_ctrl->op_mode = sop_mode;
+	band_role_num = phl_mr_get_role_num(phl_info, band_ctrl);
+
+	chanctx_num = phl_mr_get_chanctx_num(phl_info, band_ctrl);
+	if (chanctx_num == 0) {
+		phl_sts = _phl_chanctx_create(phl_info, wifi_role, rlink, new_chdef);
+		if (phl_sts == RTW_PHL_STATUS_SUCCESS) {
+			is_ch_grouped = true;
+			sop_mode = MR_OP_SWR;
+			band_ctrl->op_mode = sop_mode;
+		}
+		else {
+			PHL_ERR("%s %d create chanctx failed\n", __FUNCTION__, __LINE__);
+			_os_warn_on(1);
+		}
+		goto _exit;
+	}
+
+	_os_spinlock(drv, &band_ctrl->chan_ctx_queue.lock, _bh, NULL);
+	phl_list_for_loop(chanctx, struct rtw_chan_ctx, chan_ctx_list, list) {
+		chandef = &chanctx->chan_def;
+		is_ch_grouped = _phl_is_chbw_grouped(chandef, new_chdef);
+		if (is_ch_grouped) {
+			_phl_adjust_chandef(new_chdef, chandef, true);
+			_os_mem_cpy(drv, new_chdef, chandef, sizeof(struct rtw_chan_def));
+			phl_sts = _phl_chanctx_rmap_set(phl_info, wifi_role, rlink,
+			                      &band_ctrl->chan_ctx_queue, chanctx);
+			if (phl_sts != RTW_PHL_STATUS_SUCCESS) {
+				rmap_chk_fail = true;
+				is_ch_grouped = false;
+				sop_mode = MR_OP_MAX;
+				/*band_ctrl->op_mode = sop_mode;*/
+			}
+			break;
+		}
+	}
+	_os_spinunlock(drv, &band_ctrl->chan_ctx_queue.lock, _bh, NULL);
+
+	if (rmap_chk_fail == true)
+		goto _exit;
+
+	if (is_ch_grouped == true) {/****** SCC or MCC ******/
+		PHL_INFO("%s grouped chan_def - hw_band_idx:%d band:%d chan:%d, bw:%d, offset:%d\n",
+				__func__, rlink->hw_band, new_chdef->band, new_chdef->chan, new_chdef->bw, new_chdef->offset);
+
+		/*current chanctx_num*/
+		if (chanctx_num == 1) {
+			sop_mode = MR_OP_SCC;
+			band_ctrl->op_mode = sop_mode;
+		}
+		else if (chanctx_num == 2) {
+			#ifdef CONFIG_MCC_SUPPORT
+			if (phl_com->dev_cap.mcc_sup == true) {
+				sop_mode = MR_OP_MCC;
+				band_ctrl->op_mode = sop_mode;
+			} else
+			#endif
+			{
+				PHL_ERR("Don't support MCC, but cur chanctx num = 2 ??\n");
+				_os_warn_on(1);
+			}
+		}
+		else {
+			PHL_ERR("%s Unknow state - chan can grouped, ch-ctx num:%d\n",
+						__func__, chanctx_num);
+			_os_warn_on(1);
+		}
+		goto _exit;
+	}
+
+	if (chanctx_num >= 2) {
+		PHL_ERR("current chan_ctx num(%d) >= 2, not support over 3xchan-set on one band\n",
+								chanctx_num);
+		#ifdef CONFIG_DBCC_SUPPORT
+		/*TODO : Consider scenario - [MCC] 2G-CH6+5G-CH149, New ch is 2G-CH11*/
+		if (phl_com->dev_cap.mcmb_skip_dbcc == false && phl_com->dev_cap.dbcc_sup == true)
+			sop_mode = MR_OP_DBCC;
+		#endif
+		goto _exit;
+	}
+
+	/* MCC - chanctx_num == 1 */
+	/* MC-SB */
+	if (is_ch_in_same_band(new_chdef, chandef))
+		goto _mcc_hdl;
+
+	/* MC-MB - MCC */
+	#ifdef CONFIG_DBCC_SUPPORT
+	if (phl_com->dev_cap.mcmb_itf_ctrl == false &&
+	    is_ch_in_interference_band(new_chdef, chandef))
+		goto _mcc_hdl;
+
+	/* MC-MB - DBCC */
+	if (phl_com->dev_cap.mcmb_skip_dbcc == false && phl_com->dev_cap.dbcc_sup == true) {
+		PHL_INFO("%s support DBCC\n", __func__);
+		sop_mode = MR_OP_DBCC;
+		goto _exit;
+	}
+	#endif
+
+_mcc_hdl:
+	/* MCC */
+	#ifdef CONFIG_MCC_SUPPORT
+	if (phl_com->dev_cap.mcc_sup == true) {
+		phl_sts = _phl_chanctx_create(phl_info,
+		                              wifi_role,
+		                              rlink,
+		                              new_chdef);
+		if (phl_sts == RTW_PHL_STATUS_SUCCESS) {
+			is_ch_grouped = true;
+			PHL_INFO("%s chan:%d, bw:%d, offset:%d could be created - MCC\n",
+				__func__, new_chdef->chan, new_chdef->bw, new_chdef->offset);
+			sop_mode = MR_OP_MCC;
+			band_ctrl->op_mode = sop_mode;
+		} else {
+			PHL_ERR("%s %d create chanctx failed\n", __FUNCTION__, __LINE__);
+			_os_warn_on(1);
+		}
+	}
+	#endif/*CONFIG_MCC_SUPPORT*/
+	{
+		PHL_ERR("%s don't support MCC\n", __func__);
+	}
+
+_exit:
+	if (mr_cc_info) {
+		mr_cc_info->is_db = mr_ctl->is_db;
+		mr_cc_info->cur_band_idx = band_idx;
+		mr_cc_info->role_num = band_role_num;
+		mr_cc_info->chctx_num = (u8)chanctx_num;
+		mr_cc_info->chctx_band_map = band_ctrl->chctx_band_map;
+		mr_cc_info->sugg_opmode = sop_mode;
+		_phl_dump_mr_cc_info(phl_info, mr_cc_info);
+	}
+	PHL_DUMP_MR_EX(phl_info);
+
+	return is_ch_grouped;
 }
 
 
@@ -1085,77 +1568,52 @@ _exit:
  * @new_chan: Input: new chdef; Output: the final operating ch ctx.
  * ex: In the scc case, it will be the group chdef.
  */
-bool rtw_phl_chanctx_add(void *phl, struct rtw_wifi_role_t *wifi_role,
-		u8 *chan, enum channel_width *bw, enum chan_offset *offset)
+bool rtw_phl_chanctx_add(void *phl,
+                         struct rtw_wifi_role_t *wifi_role,
+                         struct rtw_wifi_role_link_t *rlink,
+                         struct rtw_chan_def *new_chdef,
+                         struct rtw_mr_chctx_info *mr_cc_info)
 {
 	struct phl_info_t *phl_info = (struct phl_info_t *)phl;
 	struct rtw_phl_com_t *phl_com = phl_info->phl_com;
-	void *drv = phl_to_drvpriv(phl_info);
 	struct mr_ctl_t *mr_ctl = phlcom_to_mr_ctrl(phl_com);
-	u8 band_idx = wifi_role->hw_band;
+	u8 band_idx = rlink->hw_band;
 	bool is_ch_grouped = false;
-	struct hw_band_ctl_t *band_ctrl = &(mr_ctl->band_ctrl[band_idx]);
-	int chanctx_num = 0;
-	u8 chctx_role_num = 0;
 
-	if(!chan || !bw || !offset)
+	if(new_chdef == NULL)
 		goto _exit;
 
-	if (*chan == 0) {
+	if (new_chdef->chan == 0) {
 		PHL_ERR("%s req chan = 0 \n", __func__);
 		goto _exit;
 	}
 
 	/*status check*/
-	if (mr_ctl->is_sb) {
+	if (mr_ctl->is_db == false) {
 		if (band_idx == 1) {
 			PHL_ERR("wrole:%d in band_idx:%d\n", wifi_role->id, band_idx);
 			goto _exit;
 		}
 	}
 
+	is_ch_grouped = phl_chanctx_add(phl_info, wifi_role, rlink, new_chdef, mr_cc_info);
 
-	is_ch_grouped = phl_chanctx_add(phl_info, wifi_role, chan, bw, offset);
-	if (is_ch_grouped) {
-		chanctx_num = phl_mr_get_chanctx_num(phl_info, band_ctrl);
-		if (chanctx_num == 2) {
-			band_ctrl->op_mode = MR_OP_MCC;
-		} else if (chanctx_num == 1) {
-			struct rtw_chan_ctx *chanctx = NULL;
-			struct phl_queue *chan_ctx_queue = &band_ctrl->chan_ctx_queue;
-
-			_os_spinlock(drv, &chan_ctx_queue->lock, _ps, NULL);
-			chanctx = list_first_entry(&chan_ctx_queue->queue,
-							struct rtw_chan_ctx, list);
-			chctx_role_num = phl_chanctx_get_rnum(phl_info, chan_ctx_queue, chanctx);
-			if (chctx_role_num >= 2)
-				band_ctrl->op_mode = MR_OP_SCC;
-			else
-				band_ctrl->op_mode = MR_OP_NON;
-			_os_spinunlock(drv, &chan_ctx_queue->lock, _ps, NULL);
-		}
-	}
-	#ifdef CONFIG_DBCC_SUPPORT
-	else {
-		if ((phl_com->dev_cap.hw_sup_flags & HW_SUP_DBCC) && (phl_com->dev_cap.dbcc_sup)) {
-			/*TODO - info core layer */
-		}
-	}
-	#endif
 _exit:
 	PHL_DUMP_MR_EX(phl_info);
 	return is_ch_grouped;
 }
 
 enum rtw_phl_status
-rtw_phl_chanctx_del_no_self(void *phl, struct rtw_wifi_role_t *wifi_role)
+rtw_phl_chanctx_del_no_self(void *phl,
+                            struct rtw_wifi_role_t *wifi_role,
+                            struct rtw_wifi_role_link_t *rlink)
 {
 	enum rtw_phl_status phl_sts = RTW_PHL_STATUS_FAILURE;
 	struct phl_info_t *phl_info = (struct phl_info_t *)phl;
 	struct rtw_phl_com_t *phl_com = phl_info->phl_com;
 	void *drv = phl_to_drvpriv(phl_info);
 	struct mr_ctl_t *mr_ctl = phlcom_to_mr_ctrl(phl_com);
-	struct hw_band_ctl_t *band_ctrl = &(mr_ctl->band_ctrl[wifi_role->hw_band]);
+	struct hw_band_ctl_t *band_ctrl = &(mr_ctl->band_ctrl[rlink->hw_band]);
 	struct rtw_chan_ctx *chanctx = NULL;
 	int chctx_num = 0;
 
@@ -1172,17 +1630,17 @@ rtw_phl_chanctx_del_no_self(void *phl, struct rtw_wifi_role_t *wifi_role)
 		goto _exit;
 	}
 	else if (chctx_num == 1) { /*SCC*/
-		_os_spinlock(drv, &band_ctrl->chan_ctx_queue.lock, _ps, NULL);
+		_os_spinlock(drv, &band_ctrl->chan_ctx_queue.lock, _bh, NULL);
 		if (!list_empty(&band_ctrl->chan_ctx_queue.queue)) {
 			chanctx = list_first_entry(&band_ctrl->chan_ctx_queue.queue,
 							struct rtw_chan_ctx, list);
-			phl_sts = _phl_chanctx_del(phl_info, &band_ctrl->chan_ctx_queue, chanctx);
+			phl_sts = _phl_chanctx_del(phl_info, band_ctrl, chanctx);
 			if (phl_sts != RTW_PHL_STATUS_SUCCESS) {
-				PHL_ERR("_phl_chanctx_del failed\n");
+				PHL_ERR("%s _phl_chanctx_del failed\n", __func__);
 				_os_warn_on(1);
 			}
 		}
-		_os_spinunlock(drv, &band_ctrl->chan_ctx_queue.lock, _ps, NULL);
+		_os_spinunlock(drv, &band_ctrl->chan_ctx_queue.lock, _bh, NULL);
 		_os_kmem_free(drv, chanctx, sizeof(struct rtw_chan_ctx));
 	}
 	else if (chctx_num == 2) { /*MCC*/
@@ -1193,15 +1651,18 @@ _exit:
 	return phl_sts;
 }
 
-int rtw_phl_chanctx_del(void *phl, struct rtw_wifi_role_t *wifi_role,
-						struct rtw_chan_def *chan_def)
+int rtw_phl_chanctx_del(void *phl,
+                        struct rtw_wifi_role_t *wifi_role,
+                        struct rtw_wifi_role_link_t *rlink,
+                        struct rtw_chan_def *chan_def)
 {
 	enum rtw_phl_status phl_sts = RTW_PHL_STATUS_FAILURE;
 	struct phl_info_t *phl_info = (struct phl_info_t *)phl;
 	struct rtw_phl_com_t *phl_com = phl_info->phl_com;
 	void *drv = phl_to_drvpriv(phl_info);
 	struct mr_ctl_t *mr_ctl = phlcom_to_mr_ctrl(phl_com);
-	struct hw_band_ctl_t *band_ctrl = &(mr_ctl->band_ctrl[wifi_role->hw_band]);
+	u8 band_idx = rlink->hw_band;
+	struct hw_band_ctl_t *band_ctrl = &(mr_ctl->band_ctrl[band_idx]);
 	struct phl_queue *chan_ctx_queue = &band_ctrl->chan_ctx_queue;
 	struct rtw_chan_ctx *target_chanctx = NULL;
 	struct rtw_chan_ctx *chanctx = NULL;
@@ -1215,12 +1676,19 @@ int rtw_phl_chanctx_del(void *phl, struct rtw_wifi_role_t *wifi_role,
 		goto _exit;
 	}
 
-	target_chanctx = wifi_role->chanctx;
-	if (target_chanctx == NULL) {
-		PHL_ERR("%s wifi_role->chanctx == NULL\n", __func__);
+	if (rlink == NULL) {
+		PHL_ERR("%s role link == NULL!!\n", __func__);
 		/*_os_warn_on(1);*/
 		goto _exit;
 	}
+
+	target_chanctx = rlink->chanctx;
+	if (target_chanctx == NULL) {
+		PHL_ERR("%s target chanctx == NULL\n", __func__);
+		/*_os_warn_on(1);*/
+		goto _exit;
+	}
+
 	/*init chan_def*/
 	if (chan_def)
 		chan_def->chan = 0;
@@ -1242,22 +1710,26 @@ int rtw_phl_chanctx_del(void *phl, struct rtw_wifi_role_t *wifi_role,
 	}
 
 	if (chctx_role_num == 1) { /*single role on this chctx*/
-		_os_spinlock(drv, &chan_ctx_queue->lock, _ps, NULL);
-		phl_sts = _phl_chanctx_rmap_clr(phl_info, wifi_role,
+		_os_spinlock(drv, &chan_ctx_queue->lock, _bh, NULL);
+		phl_sts = _phl_chanctx_rmap_clr(phl_info, wifi_role, rlink,
 						chan_ctx_queue, target_chanctx);
 		if (phl_sts != RTW_PHL_STATUS_SUCCESS)
 			PHL_ERR("_phl_chanctx_rmap_clr failed\n");
 
-		phl_sts = _phl_chanctx_del(phl_info, chan_ctx_queue, target_chanctx);
+		phl_sts = _phl_chanctx_del(phl_info, band_ctrl, target_chanctx);
 		if (phl_sts != RTW_PHL_STATUS_SUCCESS)
 			PHL_ERR("_phl_chanctx_del failed\n");
-		_os_spinunlock(drv, &chan_ctx_queue->lock, _ps, NULL);
+		_os_spinunlock(drv, &chan_ctx_queue->lock, _bh, NULL);
 
 		_os_kmem_free(drv, target_chanctx, sizeof(struct rtw_chan_ctx));
+		target_chanctx = NULL;
 
 	} else { /*multi roles on this chctx*/
-		phl_sts = _phl_chanctx_rmap_clr_with_lock(phl_info, wifi_role,
-						chan_ctx_queue, target_chanctx);
+		phl_sts = _phl_chanctx_rmap_clr_with_lock(phl_info,
+		                                          wifi_role,
+		                                          rlink,
+		                                          chan_ctx_queue,
+		                                          target_chanctx);
 		if (phl_sts != RTW_PHL_STATUS_SUCCESS)
 			PHL_ERR("_phl_chanctx_rmap_clr_with_lock failed\n");
 
@@ -1271,16 +1743,16 @@ int rtw_phl_chanctx_del(void *phl, struct rtw_wifi_role_t *wifi_role,
 
 	chctx_num = phl_mr_get_chanctx_num(phl_info, band_ctrl);
 	if (chctx_num == 0) {
-		band_ctrl->op_mode = MR_OP_NON;
+		band_ctrl->op_mode = MR_OP_NONE;
 	}
 	else if (chctx_num == 1) {
-		_os_spinlock(drv, &chan_ctx_queue->lock, _ps, NULL);
+		_os_spinlock(drv, &chan_ctx_queue->lock, _bh, NULL);
 		chanctx = list_first_entry(&chan_ctx_queue->queue,
 						struct rtw_chan_ctx, list);
 		chctx_role_num = phl_chanctx_get_rnum(phl_info, chan_ctx_queue, chanctx);
 		if (chan_def)
 			_os_mem_cpy(drv, chan_def, &chanctx->chan_def, sizeof(struct rtw_chan_def));
-		_os_spinunlock(drv, &chan_ctx_queue->lock, _ps, NULL);
+		_os_spinunlock(drv, &chan_ctx_queue->lock, _bh, NULL);
 
 		#ifdef DBG_PHL_MR
 		if (chctx_role_num == 0) {
@@ -1288,9 +1760,9 @@ int rtw_phl_chanctx_del(void *phl, struct rtw_wifi_role_t *wifi_role,
 			_os_warn_on(1);
 		}
 		#endif
-		band_ctrl->op_mode = (chctx_role_num == 1) ? MR_OP_NON : MR_OP_SCC;
+		band_ctrl->op_mode = (chctx_role_num == 1) ? MR_OP_SWR : MR_OP_SCC;
 	} else if (chctx_num == 2) {
-		if (chan_def)
+		if (chan_def && target_chanctx)
 			_os_mem_cpy(drv, chan_def, &target_chanctx->chan_def, sizeof(struct rtw_chan_def));
 		band_ctrl->op_mode = MR_OP_MCC;
 	}
@@ -1304,87 +1776,254 @@ _exit:
 	return chctx_num;
 }
 
+#ifdef CONFIG_DBCC_SUPPORT
+enum rtw_phl_status
+phl_chanctx_switch(struct phl_info_t *phl_info,
+	struct hw_band_ctl_t *dest, struct hw_band_ctl_t *src)
+{
+	struct rtw_chan_ctx *chanctx = NULL;
+	struct phl_queue *chan_ctx_queue;
+	enum rtw_phl_status psts = RTW_PHL_STATUS_FAILURE;
+	void *drv = phl_to_drvpriv(phl_info);
+
+	PHL_INFO("%s src band_idx:%d chctx_num:%d - desc band_idx:%d chctx_num:%d\n",
+		__func__,
+		src->id, phl_mr_get_chanctx_num(phl_info, src),
+		dest->id, phl_mr_get_chanctx_num(phl_info, dest));
+
+	chan_ctx_queue = &src->chan_ctx_queue;
+
+	do {
+		_os_spinlock(drv, &src->chan_ctx_queue.lock, _bh, NULL);
+		if (list_empty(&chan_ctx_queue->queue)) {
+			chanctx = NULL;
+		} else {
+			chanctx = list_first_entry(&chan_ctx_queue->queue,
+						struct rtw_chan_ctx, list);
+			list_del(&chanctx->list);
+			chan_ctx_queue->cnt--;
+			psts = _phl_chanctx_add_with_lock(phl_info, dest, chanctx);
+			if (psts != RTW_PHL_STATUS_SUCCESS) {
+				PHL_ERR("%s chanctx add failed\n", __func__);
+				_os_warn_on(1);
+			}
+		}
+		_os_spinunlock(drv, &src->chan_ctx_queue.lock, _bh, NULL);
+	} while (chanctx != NULL);
+	return RTW_PHL_STATUS_SUCCESS;
+}
+#endif
+
 #ifdef	PHL_MR_PROC_CMD
-bool rtw_phl_chanctx_test(void *phl, struct rtw_wifi_role_t *wifi_role, bool is_add,
-		u8 *chan, enum channel_width *bw, enum chan_offset *offset)
+#ifdef CONFIG_DBCC_SUPPORT
+bool phl_chanctx_switch_test(void *phl, u8 test_mode)
+{
+	struct phl_info_t *phl_info = (struct phl_info_t *)phl;
+	struct rtw_phl_com_t *phl_com = phl_info->phl_com;
+	struct mr_ctl_t *mr_ctl = phlcom_to_mr_ctrl(phl_com);
+	struct hw_band_ctl_t *band0_ctrl = &(mr_ctl->band_ctrl[HW_BAND_0]);
+	struct hw_band_ctl_t *band1_ctrl = &(mr_ctl->band_ctrl[HW_BAND_1]);
+	int b0_chctx_num = 0;
+	int b1_chctx_num = 0;
+	bool rst = true;
+
+	b0_chctx_num = phl_mr_get_chanctx_num(phl_info, band0_ctrl);
+	b1_chctx_num = phl_mr_get_chanctx_num(phl_info, band1_ctrl);
+	PHL_INFO("%s Band_0 has chctx_num(%d)\n", __func__, b0_chctx_num);
+	PHL_INFO("%s Band_1 has chctx_num(%d)\n", __func__, b1_chctx_num);
+	if (test_mode == 3)
+		phl_chanctx_switch(phl_info, band0_ctrl, band1_ctrl);
+	else if (test_mode == 4)
+		phl_chanctx_switch(phl_info, band1_ctrl, band0_ctrl);
+
+	PHL_DUMP_MR_EX(phl_info);
+	return rst;
+}
+#endif /* CONFIG_DBCC_SUPPORT */
+bool rtw_phl_chanctx_test(void *phl,
+                          struct rtw_wifi_role_t *wifi_role,
+                          struct rtw_wifi_role_link_t *rlink,
+                          u8 test_mode,/*0-chk, 1-add, 2-del*/
+                          struct rtw_chan_def *new_chdef,
+                          struct rtw_mr_chctx_info *mr_cc_info)
 {
 	bool rst = true;
 	int chanctx_num = 0;
 	struct rtw_chan_def chan_def = {0};
 
-	if (is_add) {
-		rst = rtw_phl_chanctx_add(phl, wifi_role, chan, bw, offset);
+	if (test_mode == 0){
+		rst = rtw_phl_chanctx_chk(phl, wifi_role, rlink, new_chdef, mr_cc_info);
 	}
-	else {
-		chanctx_num = rtw_phl_chanctx_del(phl, wifi_role, &chan_def);
+	else if (test_mode == 1) {
+		rst = rtw_phl_chanctx_add(phl, wifi_role, rlink, new_chdef, mr_cc_info);
+	}
+	else if (test_mode == 2){
+		chanctx_num = rtw_phl_chanctx_del(phl, wifi_role, rlink, &chan_def);
 		PHL_ERR("%s chctx_num = %d\n", __func__, chanctx_num);
 		PHL_DUMP_CHAN_DEF(&chan_def);
 	}
+
+	#ifdef CONFIG_DBCC_SUPPORT
+	else if (test_mode == 3 || test_mode == 4) {
+		rst = phl_chanctx_switch_test(phl, test_mode);
+	}
+	#endif
 	return rst;
 }
 #endif
-enum band_type rtw_phl_get_band_type(u8 chan)
+
+u8 rtw_phl_get_center_ch(struct rtw_chan_def *chan_def)
 {
-	/*TODO - BAND_ON_6G*/
-	return (chan > 14) ? BAND_ON_5G : BAND_ON_24G;
-}
-u8 rtw_phl_get_center_ch(u8 ch,
-			enum channel_width bw, enum chan_offset offset)
-{
-	u8 cch = ch;
+	u8 ch = chan_def->chan;
+	u8 i, start, end, cent_ch;
 
-	if (bw == CHANNEL_WIDTH_160) {
-		if (ch % 4 == 0) {
-			if (ch >= 36 && ch <= 64)
-				cch = 50;
-			else if (ch >= 100 && ch <= 128)
-				cch = 114;
-		} else if (ch % 4 == 1) {
-			if (ch >= 149 && ch <= 177)
-				cch = 163;
+	if (chan_def->bw == CHANNEL_WIDTH_160) {
+		if (chan_def->band == BAND_ON_6G) {
+			start = 1;
+			end = 29;
+			cent_ch = 15;
+
+			for (i = 0; i < 8; i++){
+				if (ch >= (start + (i * 32))
+				     && ch <= (end + (i * 32))) {
+					     ch = (cent_ch + (i * 32));
+				}
+			}
+		} else {
+			if (ch % 4 == 0) {
+				if (ch >= 36 && ch <= 64)
+					ch = 50;
+				else if (ch >= 100 && ch <= 128)
+					ch = 114;
+			} else if (ch % 4 == 1) {
+				if (ch >= 149 && ch <= 177)
+					ch = 163;
+			}
 		}
+	} else if (chan_def->bw == CHANNEL_WIDTH_80) {
+		if (chan_def->band == BAND_ON_6G) {
+			start = 1;
+			end = 13;
+			cent_ch = 7;
 
-	} else if (bw == CHANNEL_WIDTH_80) {
-		if (ch <= 14)
-			cch = 7; /* special case for 2.4G */
-		else if (ch % 4 == 0) {
-			if (ch >= 36 && ch <= 48)
-				cch = 42;
-			else if (ch >= 52 && ch <= 64)
-				cch = 58;
-			else if (ch >= 100 && ch <= 112)
-				cch = 106;
-			else if (ch >= 116 && ch <= 128)
-				cch = 122;
-			else if (ch >= 132 && ch <= 144)
-				cch = 138;
-		} else if (ch % 4 == 1) {
-			if (ch >= 149 && ch <= 161)
-				cch = 155;
-			else if (ch >= 165 && ch <= 177)
-				cch = 171;
+			for (i = 0; i < 16; i++){
+				if (ch >= (start + (i * 16))
+				     && ch <= (end + (i * 16))) {
+					     ch = (cent_ch + (i * 16));
+				}
+			}
+		} else {
+			if (ch <= 14)
+				ch = 7; /* special case for 2.4G */
+			else if (ch % 4 == 0) {
+				if (ch >= 36 && ch <= 48)
+					ch = 42;
+				else if (ch >= 52 && ch <= 64)
+					ch = 58;
+				else if (ch >= 100 && ch <= 112)
+					ch = 106;
+				else if (ch >= 116 && ch <= 128)
+					ch = 122;
+				else if (ch >= 132 && ch <= 144)
+					ch = 138;
+			} else if (ch % 4 == 1) {
+				if (ch >= 149 && ch <= 161)
+					ch = 155;
+				else if (ch >= 165 && ch <= 177)
+					ch = 171;
+			}
 		}
+	} else if (chan_def->bw == CHANNEL_WIDTH_40) {
+		if (chan_def->offset == CHAN_OFFSET_UPPER)
+			ch += 2;
+		else if (chan_def->offset == CHAN_OFFSET_LOWER)
+			ch -= 2;
 
-	} else if (bw == CHANNEL_WIDTH_40) {
-		if (offset == CHAN_OFFSET_UPPER)
-			cch = ch + 2;
-		else if (offset == CHAN_OFFSET_LOWER)
-			cch = ch - 2;
-
-	} else if (bw == CHANNEL_WIDTH_20
-		|| bw == CHANNEL_WIDTH_10
-		|| bw == CHANNEL_WIDTH_5) {
+	} else if (chan_def->bw == CHANNEL_WIDTH_20
+		|| chan_def->bw == CHANNEL_WIDTH_10
+		|| chan_def->bw == CHANNEL_WIDTH_5) {
 		; /* the same as ch */
 	}
 	else {
 		PHL_ERR("%s failed\n", __func__);
 	}
-	return cch;
+	return ch;
+}
+
+int rtw_phl_bch2freq(enum band_type band, int ch)
+{
+	if (band == BAND_ON_6G) {
+		if (ch >= 1 && ch <= 253)
+			return 5950 + ch * 5;
+	} else if (band == BAND_ON_24G || band == BAND_ON_5G) {
+		if (ch >= 1 && ch <= 14) {
+			if (ch == 14)
+				return 2484;
+			else if (ch < 14)
+				return 2407 + ch * 5;
+		} else if (ch >= 36 && ch <= 177)
+			return 5000 + ch * 5;
+	}
+
+	return 0; /* not supported */
+}
+
+bool rtw_phl_bchbw_to_freq_range(enum band_type band, u8 ch
+	, enum channel_width bw, enum chan_offset offset, u32 *hi, u32 *lo)
+{
+	struct rtw_chan_def chan_def;
+	u8 c_ch;
+	u32 freq;
+	u32 hi_ret = 0, lo_ret = 0;
+	bool valid = false;
+
+	if (hi)
+		*hi = 0;
+	if (lo)
+		*lo = 0;
+
+	chan_def.band = band;
+	chan_def.chan = ch;
+	chan_def.bw = bw;
+	chan_def.offset = offset;
+	c_ch = rtw_phl_get_center_ch(&chan_def);
+	freq = rtw_phl_bch2freq(band, c_ch);
+
+	if (!freq) {
+		_os_warn_on(1);
+		goto exit;
+	}
+
+	if (bw == CHANNEL_WIDTH_160) {
+		hi_ret = freq + 80;
+		lo_ret = freq - 80;
+	} else if (bw == CHANNEL_WIDTH_80) {
+		hi_ret = freq + 40;
+		lo_ret = freq - 40;
+	} else if (bw == CHANNEL_WIDTH_40) {
+		hi_ret = freq + 20;
+		lo_ret = freq - 20;
+	} else if (bw == CHANNEL_WIDTH_20) {
+		hi_ret = freq + 10;
+		lo_ret = freq - 10;
+	} else
+		_os_warn_on(1);
+
+	if (hi)
+		*hi = hi_ret;
+	if (lo)
+		*lo = lo_ret;
+
+	valid = true;
+
+exit:
+	return valid;
 }
 
 /*
  * Refer to 80211 spec Annex E Table E-4 Global operating classes
- * Handle 2.4G/5G Bandwidth 20/40/80/160
+ * Handle 2.4G/5G/6G Bandwidth 20/40/80/160
+ * 80+ not support.
  */
 u8
 rtw_phl_get_operating_class(
@@ -1394,7 +2033,9 @@ rtw_phl_get_operating_class(
 	u8 operating_class = 0;
 
 	if(chan_def.bw == CHANNEL_WIDTH_20){
-		if(chan_def.chan <= 13)
+		if(chan_def.band == BAND_ON_6G)
+			operating_class = 131;
+		else if(chan_def.chan <= 13)
 			operating_class = 81;
 		else if(chan_def.chan ==14)
 			operating_class = 82;
@@ -1404,13 +2045,14 @@ rtw_phl_get_operating_class(
 			operating_class = 118;
 		else if(chan_def.chan >= 100 && chan_def.chan <= 144)
 			operating_class = 121;
-		else if(chan_def.chan >= 149 && chan_def.chan <= 169)
+		else if(chan_def.chan >= 149 && chan_def.chan <= 177)
 			operating_class = 125;
 		else
 			PHL_WARN("%s: Undefined channel (%d)\n", __FUNCTION__, chan_def.chan);
-	}
-	else if(chan_def.bw == CHANNEL_WIDTH_40){
-		if(chan_def.offset == CHAN_OFFSET_UPPER){
+	} else if(chan_def.bw == CHANNEL_WIDTH_40) {
+		if(chan_def.band == BAND_ON_6G)
+			operating_class = 132;
+		else if(chan_def.offset == CHAN_OFFSET_UPPER) {
 			if(chan_def.chan >= 1 && chan_def.chan <= 9)
 				operating_class = 83;
 			else if(chan_def.chan == 36 || chan_def.chan == 44)
@@ -1421,12 +2063,12 @@ rtw_phl_get_operating_class(
 				chan_def.chan == 116 || chan_def.chan == 124 ||
 				chan_def.chan == 132 || chan_def.chan == 140)
 				operating_class = 122;
-			else if(chan_def.chan == 149 || chan_def.chan == 157)
+			else if(chan_def.chan == 149 || chan_def.chan == 157 ||
+				chan_def.chan == 165 || chan_def.chan == 173)
 				operating_class = 126;
 			else
 				PHL_WARN("%s: Undefined channel (%d)\n", __FUNCTION__, chan_def.chan);
-		}
-		else if(chan_def.offset == CHAN_OFFSET_LOWER){
+		} else if(chan_def.offset == CHAN_OFFSET_LOWER) {
 			if(chan_def.chan >= 5 && chan_def.chan <= 13)
 				operating_class = 84;
 			else if(chan_def.chan == 40 || chan_def.chan == 48)
@@ -1437,31 +2079,30 @@ rtw_phl_get_operating_class(
 				chan_def.chan == 120 || chan_def.chan == 128 ||
 				chan_def.chan == 136 || chan_def.chan == 144)
 				operating_class = 123;
-			else if(chan_def.chan == 153 || chan_def.chan == 161)
+			else if(chan_def.chan == 153 || chan_def.chan == 161 ||
+				chan_def.chan == 169 || chan_def.chan == 177)
 				operating_class = 127;
 			else
 				PHL_WARN("%s: Undefined channel (%d)\n", __FUNCTION__, chan_def.chan);
-		}
-		else{
+		} else {
 			PHL_WARN("%s: Invalid offset(%d)\n",
 				 __FUNCTION__, chan_def.offset);
 		}
-	}
-	else if(chan_def.bw == CHANNEL_WIDTH_80){
-		if(chan_def.center_ch == 42 || chan_def.center_ch == 58 ||
-		   chan_def.center_ch == 106 || chan_def.center_ch == 122 ||
-		   chan_def.center_ch == 138 || chan_def.center_ch == 155)
+	} else if(chan_def.bw == CHANNEL_WIDTH_80) {
+		if(chan_def.band == BAND_ON_5G)
 			operating_class = 128;
+		else if(chan_def.band == BAND_ON_6G)
+			operating_class = 133;
 		else
 			PHL_WARN("%s: Undefined channel (%d)\n", __FUNCTION__, chan_def.center_ch);
-	}
-	else if(chan_def.bw == CHANNEL_WIDTH_160){
-		if(chan_def.center_ch == 50 || chan_def.center_ch == 114)
+	} else if(chan_def.bw == CHANNEL_WIDTH_160) {
+		if(chan_def.band == BAND_ON_5G)
 			operating_class = 129;
+		else if(chan_def.band == BAND_ON_6G)
+			operating_class = 134;
 		else
 			PHL_WARN("%s: Undefined channel (%d)\n", __FUNCTION__, chan_def.center_ch);
-	}
-	else{
+	} else {
 		PHL_WARN("%s: Not handle bandwidth (%d)\n", __FUNCTION__, chan_def.bw);
 	}
 
@@ -1476,57 +2117,121 @@ rtw_phl_get_chandef_from_operating_class(
 )
 {
 	bool ret = true;
-	if(operating_class == 81 || operating_class == 82 ||
-	   operating_class == 115 || operating_class == 118 ||
-	   operating_class == 118 || operating_class == 121 ||
-	   operating_class == 125){
+
+	if(operating_class == 81 || operating_class == 82) {
+		/* 2.4G 20MHz */
 		chan_def->chan = channel;
 		chan_def->bw = CHANNEL_WIDTH_20;
 		chan_def->offset = CHAN_OFFSET_NO_EXT;
-		chan_def->center_ch = rtw_phl_get_center_ch(channel,
-							    CHANNEL_WIDTH_20,
-							    CHAN_OFFSET_NO_EXT);
-	}
-	else if(operating_class == 83 || operating_class == 116 ||
-		operating_class == 119 || operating_class == 122 ||
-		operating_class == 126){
+		chan_def->band = BAND_ON_24G;
+		chan_def->center_ch = rtw_phl_get_center_ch(chan_def);
+	} else if(operating_class == 115 || operating_class == 118 ||
+		  operating_class == 121 || operating_class == 124 ||
+		  operating_class == 125) {
+		/* 5G 20MHz */
+		chan_def->chan = channel;
+		chan_def->bw = CHANNEL_WIDTH_20;
+		chan_def->offset = CHAN_OFFSET_NO_EXT;
+		chan_def->band = BAND_ON_5G;
+		chan_def->center_ch = rtw_phl_get_center_ch(chan_def);
+	} else if(operating_class == 83) {
+		/* 2.4G 40MHz Upper */
 		chan_def->chan = channel;
 		chan_def->bw = CHANNEL_WIDTH_40;
 		chan_def->offset = CHAN_OFFSET_UPPER;
-		chan_def->center_ch = rtw_phl_get_center_ch(channel,
-							    CHANNEL_WIDTH_40,
-							    CHAN_OFFSET_UPPER);
-	}
-	else if(operating_class == 84 || operating_class == 117 ||
-		operating_class == 120 || operating_class == 123 ||
-		operating_class == 127){
+		chan_def->band = BAND_ON_24G;
+		chan_def->center_ch = rtw_phl_get_center_ch(chan_def);
+	} else if(operating_class == 116 || operating_class == 119 ||
+		  operating_class == 122 || operating_class == 126) {
+		/* 5G 40MHz Upper */
+		chan_def->chan = channel;
+		chan_def->bw = CHANNEL_WIDTH_40;
+		chan_def->offset = CHAN_OFFSET_UPPER;
+		chan_def->band = BAND_ON_5G;
+		chan_def->center_ch = rtw_phl_get_center_ch(chan_def);
+	} else if(operating_class == 84) {
+		/* 2.4G 40MHz Lower */
 		chan_def->chan = channel;
 		chan_def->bw = CHANNEL_WIDTH_40;
 		chan_def->offset = CHAN_OFFSET_LOWER;
-		chan_def->center_ch = rtw_phl_get_center_ch(channel,
-							    CHANNEL_WIDTH_40,
-							    CHAN_OFFSET_LOWER);
-	}
-	else if(operating_class == 128){
+		chan_def->band = BAND_ON_24G;
+		chan_def->center_ch = rtw_phl_get_center_ch(chan_def);
+	} else if(operating_class == 117 || operating_class == 120 ||
+		  operating_class == 123 || operating_class == 127) {
+		/* 5G 40MHz Lower */
+		chan_def->chan = channel;
+		chan_def->bw = CHANNEL_WIDTH_40;
+		chan_def->offset = CHAN_OFFSET_LOWER;
+		chan_def->band = BAND_ON_5G;
+		chan_def->center_ch = rtw_phl_get_center_ch(chan_def);
+	} else if(operating_class == 128){
+		/* 5G 80MHz */
 		chan_def->chan = channel;
 		chan_def->bw = CHANNEL_WIDTH_80;
 		chan_def->offset = CHAN_OFFSET_NO_DEF;
-		chan_def->center_ch = rtw_phl_get_center_ch(channel,
-							    CHANNEL_WIDTH_80,
-							    CHAN_OFFSET_NO_DEF);
-	}
-	else if(operating_class == 129){
+		chan_def->band = BAND_ON_5G;
+		chan_def->center_ch = rtw_phl_get_center_ch(chan_def);
+	} else if(operating_class == 129){
+		/* 5G 160MHz */
 		chan_def->chan = channel;
 		chan_def->bw = CHANNEL_WIDTH_160;
 		chan_def->offset = CHAN_OFFSET_NO_DEF;
-		chan_def->center_ch = rtw_phl_get_center_ch(channel,
-							    CHANNEL_WIDTH_40,
-							    CHAN_OFFSET_NO_DEF);
-	}
-	else{
+		chan_def->band = BAND_ON_5G;
+		chan_def->center_ch = rtw_phl_get_center_ch(chan_def);
+	} else if(operating_class == 131) {
+		/* 6G 20MHz */
+		chan_def->chan = channel;
+		chan_def->bw = CHANNEL_WIDTH_20;
+		chan_def->offset = CHAN_OFFSET_NO_DEF;
+		chan_def->center_ch = channel;
+		chan_def->band = BAND_ON_6G;
+	} else if(operating_class == 132) {
+		/* 6G 40MHz */
+		chan_def->chan = channel;
+		chan_def->bw = CHANNEL_WIDTH_40;
+		chan_def->offset = CHAN_OFFSET_NO_DEF;
+		chan_def->center_ch = channel;
+		chan_def->band = BAND_ON_6G;
+	} else if(operating_class == 133 || operating_class == 135) {
+		/* 6G 80MHz */
+		chan_def->chan = channel;
+		chan_def->bw = CHANNEL_WIDTH_80;
+		chan_def->offset = CHAN_OFFSET_NO_DEF;
+		chan_def->center_ch = channel;
+		chan_def->band = BAND_ON_6G;
+	} else if(operating_class == 134) {
+		/* 6G 160MHz */
+		chan_def->chan = channel;
+		chan_def->bw = CHANNEL_WIDTH_160;
+		chan_def->offset = CHAN_OFFSET_NO_DEF;
+		chan_def->center_ch = channel;
+		chan_def->band = BAND_ON_6G;
+	} else {
 		PHL_ERR("%s: Unknown operating class (%d)\n", __FUNCTION__, operating_class);
 		ret = false;
 	}
 
 	return ret;
 }
+
+#ifdef CONFIG_PHL_CHSWOFLD
+void rtw_phl_set_chsw_ofld_info(struct rtw_phl_com_t *phl_com,
+	bool chsw_ofld_en, bool rf_reload, bool skip_normal_watchdog)
+{
+	struct chsw_ofld_info_t *chsw_ofld_info = &phl_com->chsw_ofld_info;
+
+	if (chsw_ofld_en) {
+		if (phl_com->dev_cap.chsw_ofld) {
+			chsw_ofld_info->chsw_ofld_en = true;
+			chsw_ofld_info->rf_reload = rf_reload;
+			chsw_ofld_info->skip_normal_watchdog = skip_normal_watchdog;
+			return;
+		} else {
+			PHL_WARN("%s: channel switch offload is not supported.\n", __FUNCTION__);
+		}
+	}
+	chsw_ofld_info->chsw_ofld_en = false;
+	chsw_ofld_info->rf_reload = false;
+	chsw_ofld_info->skip_normal_watchdog = false;
+}
+#endif

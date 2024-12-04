@@ -34,11 +34,22 @@ u32 halrf_mac_get_pwr_reg_8852b(struct rf_info *rf, enum phl_phy_idx phy,
 u32 halrf_mac_set_pwr_reg_8852b(struct rf_info *rf, enum phl_phy_idx phy,
 	u32 addr, u32 mask, u32 val);
 
+void halrf_wlan_tx_power_control_8852b(struct rf_info *rf,
+	enum phl_phy_idx phy, enum phl_pwr_ctrl pwr_ctrl_idx,
+	u32 tx_power_val, bool enable);
+
 bool halrf_wl_tx_power_control_8852b(struct rf_info *rf, u32 tx_power_val);
 
 s8 halrf_get_ther_protected_threshold_8852b(struct rf_info *rf);
 
 s8 halrf_xtal_tracking_offset_8852b(struct rf_info *rf, enum phl_phy_idx phy);
 
+void halrf_rfe_ant_num_chk_8852b(struct rf_info *rf);
+
+void halrf_txck_force_8852b(struct rf_info *rf, enum rf_path path, bool force, enum dac_ck ck);
+
+void halrf_rxck_force_8852b(struct rf_info *rf, enum rf_path path, bool force, enum adc_ck ck);
+
+void halrf_si_reset_8852b(struct rf_info *rf);
 #endif
 #endif /*  __INC_PHYDM_API_H_8852B__ */

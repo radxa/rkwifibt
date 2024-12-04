@@ -83,6 +83,9 @@ typedef char		s8;
 typedef int16_t		s16;
 typedef int32_t		s32;
 
+#define _os_va_list va_list
+
+#include "mac_exp_def.h"
 #include "../hal_headers_le.h"
 
 typedef u16 __le16;
@@ -154,6 +157,20 @@ typedef	CRITICAL_SECTION	mac_ax_mutex;
 
 #ifndef __func__
 #define __func__ __FUNCTION__
+#endif
+
+#ifndef fallthrough
+	#if __GNUC__ >= 5 || defined(__clang__)
+		#ifndef __has_attribute
+			#define __has_attribute(x) 0
+		#endif
+		#if __has_attribute(__fallthrough__)
+			#define fallthrough __attribute__((__fallthrough__))
+		#endif
+	#endif
+	#ifndef fallthrough
+		#define fallthrough do {} while (0) /* fallthrough */
+	#endif
 #endif
 
 #endif // end of #else /* for WD1 test program */

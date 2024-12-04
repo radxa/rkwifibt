@@ -40,6 +40,8 @@ rtw_efuse_get_info(void *efuse, enum rtw_efuse_info info_type, void *value,
 
 void rtw_efuse_process(void *efuse, char *ic_name);
 
+bool rtw_efuse_is_processed(void *efuse);
+
 enum rtw_hal_status
 rtw_efuse_logicmap_buf_load(void *efuse, u8* buf, bool is_limit);
 

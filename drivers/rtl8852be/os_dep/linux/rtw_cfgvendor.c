@@ -1151,7 +1151,7 @@ static void LinkLayerStats(_adapter *padapter)
 	u32 ps_time, trx_total_time;
 	u64 tx_bytes, rx_bytes, trx_total_bytes = 0;
 	u64 tmp = 0;
-	
+
 	RTW_DBG("%s adapter type : %u\n", __func__, padapter->adapter_type);
 
 	tx_bytes = 0;
@@ -1163,22 +1163,6 @@ static void LinkLayerStats(_adapter *padapter)
 
 		pwrpriv->on_time = rtw_get_passing_time_ms(pwrpriv->radio_on_start_time);
 
-		if (rtw_mi_check_fwstate(padapter, WIFI_ASOC_STATE)) {
-			if ( pwrpriv->bpower_saving == _TRUE ) {
-				pwrpriv->pwr_saving_time += rtw_get_passing_time_ms(pwrpriv->pwr_saving_start_time);
-				pwrpriv->pwr_saving_start_time = rtw_get_current_time();
-			}
-		} else {		
-#ifdef CONFIG_IPS
-			if ( pwrpriv->bpower_saving == _TRUE ) {
-				pwrpriv->pwr_saving_time += rtw_get_passing_time_ms(pwrpriv->pwr_saving_start_time);
-				pwrpriv->pwr_saving_start_time = rtw_get_current_time();
-			}
-#else
-			pwrpriv->pwr_saving_time = pwrpriv->on_time;
-#endif
-		}
-
 		ps_time = pwrpriv->pwr_saving_time;
 
 		/* Deviation caused by caculation start time */
@@ -1186,7 +1170,7 @@ static void LinkLayerStats(_adapter *padapter)
 			ps_time = pwrpriv->on_time;
 
 		tx_bytes = pdvobjpriv->traffic_stat.last_tx_bytes;
-		rx_bytes = pdvobjpriv->traffic_stat.last_rx_bytes;		
+		rx_bytes = pdvobjpriv->traffic_stat.last_rx_bytes;
 		trx_total_bytes = tx_bytes + rx_bytes;
 
 		trx_total_time = pwrpriv->on_time - ps_time;
@@ -1205,24 +1189,24 @@ static void LinkLayerStats(_adapter *padapter)
 
 			tmp = (rx_bytes * trx_total_time);
 			tmp = rtw_division64(tmp, trx_total_bytes);
-			pwrpriv->rx_time = tmp;		
+			pwrpriv->rx_time = tmp;
 
 		}
-	
+
 	}
 	else {
 			pwrpriv->on_time = 0;
 			pwrpriv->tx_time = 0;
-			pwrpriv->rx_time = 0;	
+			pwrpriv->rx_time = 0;
 	}
 
 #ifdef CONFIG_RTW_WIFI_HAL_DEBUG
 	RTW_INFO("- tx_bytes : %llu rx_bytes : %llu total bytes : %llu\n", tx_bytes, rx_bytes, trx_total_bytes);
 	RTW_INFO("- netif_up = %s, on_time : %u ms\n", padapter->netif_up ? "1":"0", pwrpriv->on_time);
 	RTW_INFO("- pwr_saving_time : %u (%u) ms\n", pwrpriv->pwr_saving_time, ps_time);
-	RTW_INFO("- trx_total_time : %u ms\n", trx_total_time);		
+	RTW_INFO("- trx_total_time : %u ms\n", trx_total_time);
 	RTW_INFO("- tx_time : %u ms\n", pwrpriv->tx_time);
-	RTW_INFO("- rx_time : %u ms\n", pwrpriv->rx_time);	
+	RTW_INFO("- rx_time : %u ms\n", pwrpriv->rx_time);
 #endif /* CONFIG_RTW_WIFI_HAL_DEBUG */
 
 }
@@ -1329,7 +1313,7 @@ void rtw_cfgvendor_rssi_monitor_evt(_adapter *padapter) {
 	struct wiphy *wiphy= wdev->wiphy;
         struct recv_info *precvinfo = &padapter->recvinfo;
 	struct	mlme_priv	*pmlmepriv = &(padapter->mlmepriv);
-	struct	wlan_network	*pcur_network = &pmlmepriv->cur_network;
+	struct	wlan_network	*pcur_network = &pmlmepriv->dev_cur_network;
         struct rtw_wdev_priv *pwdev_priv = adapter_wdev_data(padapter);
 	struct sk_buff *skb;
 	u32 tot_len = NLMSG_DEFAULT_SIZE;
@@ -1553,6 +1537,7 @@ static int rtw_cfgvendor_logger_get_rx_pkt_fates(struct wiphy *wiphy,
 }
 
 #endif /* CONFIG_RTW_CFGVENDOR_WIFI_LOGGER */
+
 #ifdef CONFIG_RTW_WIFI_HAL
 #ifdef CONFIG_RTW_CFGVENDOR_RANDOM_MAC_OUI
 
@@ -1585,19 +1570,6 @@ void rtw_hal_pno_random_gen_mac_addr(_adapter *adapter)
 		       DUMP_PREFIX_OFFSET, 16, 1, pwdev_priv->pno_mac_addr,
 		       ETH_ALEN, 1);
 #endif
-}
-
-void rtw_hal_set_hw_mac_addr(_adapter *adapter, u8 *mac_addr)
-{
-	rtw_ps_deny(adapter, PS_DENY_IOCTL);
-	LeaveAllPowerSaveModeDirect(adapter);
-
-	rtw_hal_set_hwreg(adapter, HW_VAR_MAC_ADDR, mac_addr);
-
-#ifdef CONFIG_RTW_DEBUG
-	rtw_hal_dump_macaddr(RTW_DBGDUMP, adapter);
-#endif
-	rtw_ps_deny_cancel(adapter, PS_DENY_IOCTL);
 }
 
 static int rtw_cfgvendor_set_rand_mac_oui(struct wiphy *wiphy,

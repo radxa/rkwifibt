@@ -15,6 +15,10 @@
 #ifndef _PHL_THERMAL_H_
 #define _PHL_THERMAL_H_
 
+#define THERMAL_TX_DUTY_CTRL_DURATION 100
+#define THERMAL_NO_TX_DUTY_CTRL 100
+#define THERMAL_NO_SW_THRESHOLD 0xff
+
 void phl_thermal_protect_watchdog(struct phl_info_t *phl_info);
 
 void phl_thermal_protect_cfg_tx_duty(

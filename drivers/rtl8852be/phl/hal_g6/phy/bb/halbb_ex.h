@@ -66,7 +66,8 @@ enum habb_fun_t {
 	F_AUTO_DBG		= 9,
 	F_ANT_DIV		= 10,
 	F_DIG			= 11,
-	F_UL_TB_CTRL		= 13,
+	F_PATH_DIV		= 12,
+	F_UL_TB_CTRL	= 13,
 	F_DCR			= 31,
 	F_DEFAULT		= 0xff
 };
@@ -95,7 +96,7 @@ static const struct halbb_func_info halbb_func_i[] = {
 	{"auto_dbg", F_AUTO_DBG},
 	{"ant_div", F_ANT_DIV},
 	{"dig", F_DIG},
-
+	{"path_div", F_PATH_DIV},
 	{"ul_tb", F_UL_TB_CTRL},
 };
 
@@ -113,7 +114,8 @@ enum habb_supportability_t {
 	BB_AUTO_DBG		= BIT(F_AUTO_DBG),
 	BB_ANT_DIV		= BIT(F_ANT_DIV),
 	BB_DIG			= BIT(F_DIG),
-	BB_UL_TB_CTRL		= BIT(F_UL_TB_CTRL),
+	BB_PATH_DIV		= BIT(F_PATH_DIV),
+	BB_UL_TB_CTRL	= BIT(F_UL_TB_CTRL),
 	BB_DCR			= BIT(F_DCR)
 };
 
@@ -132,18 +134,17 @@ enum halbb_dbg_comp_t {
 	DBG_AUTO_DBG		= BIT(F_AUTO_DBG),
 	DBG_ANT_DIV		= BIT(F_ANT_DIV),
 	DBG_DIG			= BIT(F_DIG),
+	DBG_PATH_DIV		= BIT(F_PATH_DIV),
 	DBG_UL_TB_CTRL		= BIT(F_UL_TB_CTRL),
 	/*=== [Non-DM Part] ======================*/
-	DBG_BIT12		= BIT(12),
-	DBG_BIT13		= BIT(13),
 	DBG_BIT14		= BIT(14),
-	DBG_BIT15		= BIT(15),
-	DBG_BIT16		= BIT(16),
+	DBG_FW_DBG		= BIT(15),
+	DBG_PHY_CONFIG_BE		= BIT(16),
 	DBG_BIT17		= BIT(17),
-	DBG_BIT18		= BIT(18),
-	DBG_BIT19		= BIT(19),
+	DBG_SNIFFER		= BIT(18),
+	DBG_CH_INFO		= BIT(19),
 	DBG_PHY_STS		= BIT(20),
-	DBG_BIT21		= BIT(21),
+	DBG_CONNECT		= BIT(21),
 	DBG_FW_INFO		= BIT(22),
 	DBG_COMMON_FLOW		= BIT(23),
 	DBG_IC_API		= BIT(24),
@@ -187,10 +188,11 @@ void halbb_media_status_update(struct bb_info *bb,
 void halbb_watchdog_reset(struct bb_info *bb);
 void halbb_watchdog(struct bb_info *bb, enum bb_watchdog_mode_t mode,
 		    enum phl_phy_idx phy_idx);
+u8 halbb_wifi_event_notify(struct bb_info *bb, enum phl_msg_evt_id event, enum phl_phy_idx phy_idx);
 void halbb_bb_cmd_notify(struct bb_info *bb, void *bb_cmd, enum phl_phy_idx phy_idx);
 u8 halbb_pause_func(struct bb_info *bb, enum habb_fun_t pause_func,
 		    enum halbb_pause_type pause_type,
 		    enum halbb_pause_lv_type lv,
 		    u8 val_lehgth,
-		    u32 *val_buf);
+		    u32 *val_buf, enum phl_phy_idx phy_idx);
 #endif

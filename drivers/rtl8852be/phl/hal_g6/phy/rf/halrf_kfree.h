@@ -15,9 +15,11 @@
 #ifndef _HALRF_KFREE_H_
 #define _HALRF_KFREE_H_
 
+#if 0
 #define RX_GAIN_K_PATH_MAX 2
 #define RX_GAIN_K_OFFSET_MAX 5
 #define RX_GAIN_K_HIDE_OFFSET_MAX 4
+#endif
 
 enum BITMASK {
 	LOW_MASK = 0,
@@ -25,7 +27,8 @@ enum BITMASK {
 };
 
 struct halrf_kfree_info{
-	u8 efuse_content[80];
+	u8 efuse_content[100];
+
 #if 0
 	bool efuse_chenk;
 	bool hide_efuse_chenk;

@@ -36,13 +36,13 @@
 
 #define TU_UNIT 1024
 #define MS_UNIT 1000
-#define PORT_DLY_TU_CNT_LMT 2
-#define PORT_DLY_US_CNT_LMT 2
+#define PORT_DLY_TU_CNT_LMT 200
+#define PORT_DLY_US_CNT_LMT 200
 
 #define MAX_BCN_ITVL 0x639C
 
 #define CHK_BCNQ_CNT 200
-#define BCNQ_EMP_CONT_CNT 2
+#define BCNQ_EMP_CONT_CNT 3
 
 #define LBK_PLCP_DLY_DEF 0x28
 #define LBK_PLCP_DLY_FPGA 0x46
@@ -253,6 +253,31 @@ u32 mac_tsf_sync(struct mac_ax_adapter *adapter, u8 from_port, u8 to_port,
  */
 u32 mac_parse_bcn_stats_c2h(struct mac_ax_adapter *adapter,
 			    u8 *content, struct mac_ax_bcn_cnt *val);
+/**
+ * @}
+ * @}
+ */
+
+/**
+ * @addtogroup Basic_TRX
+ * @{
+ * @addtogroup MultiPort
+ * @{
+ */
+
+/**
+ * @brief get_bcn_stats_event
+ *
+ * @param *adapter
+ * @param *c2h
+ * @param *id
+ * @param *c2h_info
+ * @return Please Place Description here.
+ * @retval u32
+ */
+u32 get_bcn_stats_event(struct mac_ax_adapter *adapter,
+			struct rtw_c2h_info *c2h,
+			enum phl_msg_evt_id *id, u8 *c2h_info);
 /**
  * @}
  * @}

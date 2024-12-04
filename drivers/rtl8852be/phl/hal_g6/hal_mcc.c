@@ -208,6 +208,34 @@ exit:
 	return status;
 }
 
+void
+_mcc_check_start_t(struct rtw_phl_mcc_en_info *ori_info,
+			struct rtw_phl_mcc_en_info *new_info)
+{
+	u64 new_tsf = 0, ori_tsf = 0;
+
+	new_tsf = new_info->tsf_high;
+	new_tsf = new_tsf << 32;
+	new_tsf |= new_info->tsf_low;
+	ori_tsf = ori_info->tsf_high;
+	ori_tsf = ori_tsf << 32;
+	ori_tsf |= ori_info->tsf_low;
+	if (new_tsf < ori_tsf) {
+		u64 cnt = 0;
+
+		PHL_TRACE(COMP_PHL_MCC, _PHL_WARNING_, "%s: new_tsf(0x%08x %08x) < ori_tsf(0x%08x %08x), we shall extend the new start tsf\n",
+			__FUNCTION__, new_info->tsf_high, new_info->tsf_low,
+			ori_info->tsf_high, ori_info->tsf_low);
+		cnt = _os_division64((ori_tsf - new_tsf),
+				     (new_info->mcc_intvl * TU));
+		new_tsf = new_tsf + ((cnt + 1) * (new_info->mcc_intvl * TU));
+		new_info->tsf_high = (u32)(new_tsf >> 32);
+		new_info->tsf_low = (u32)new_tsf;
+		PHL_TRACE(COMP_PHL_MCC, _PHL_WARNING_, "%s: extended new_tsf(0x%08x %08x)\n",
+			__FUNCTION__, new_info->tsf_high, new_info->tsf_low);
+	}
+}
+
 enum rtw_hal_status rtw_hal_mcc_get_2ports_tsf(void *hal, u8 group,
 			u16 macid_x, u16 macid_y, u32 *tsf_x_h, u32 *tsf_x_l,
 			u32 *tsf_y_h, u32 *tsf_y_l)
@@ -313,6 +341,8 @@ enum rtw_hal_status rtw_hal_mcc_change_pattern(void *hal,
 				struct rtw_phl_mcc_bt_info *new_bt_info)
 {
 	enum rtw_hal_status status = RTW_HAL_STATUS_FAILURE;
+
+	_mcc_check_start_t(ori_info, new_info);
 	/* mcc_set_duration only can change 2 wifi slot,
 	otherwise we shall create new pattern and replace previous pattern*/
 	if (new_info->m_pattern.slot_num == 2 &&
@@ -357,7 +387,10 @@ enum rtw_hal_status rtw_hal_mcc_disable(void *hal, u8 group, u16 macid,
 					enum rtw_phl_tdmra_wmode wmode)
 {
 	enum rtw_hal_status status = RTW_HAL_STATUS_FAILURE;
+	struct hal_info_t *hal_i = (struct hal_info_t *)hal;
+	struct rtw_phl_stainfo_t *sta = NULL;
 
+	sta = rtw_phl_get_stainfo_by_macid(hal_i->phl_com->phl_priv, macid);
 	status = rtw_hal_mac_stop_mcc(hal, group, (u8)macid);
 	if (status != RTW_HAL_STATUS_SUCCESS) {
 		PHL_TRACE(COMP_PHL_MCC, _PHL_ERR_, "rtw_hal_mcc_disable(): Stop mcc failed\n");
@@ -376,6 +409,7 @@ enum rtw_hal_status rtw_hal_mcc_disable(void *hal, u8 group, u16 macid,
 #ifdef RTW_WKARD_HALRF_MCC
 	rtw_hal_rf_dpk_switch(hal, true);
 #endif /* RTW_WKARD_HALRF_MCC */
+	rtw_hal_notification(hal, MSG_EVT_MCC_STOP, sta->rlink->hw_band);
 	status = RTW_HAL_STATUS_SUCCESS;
 exit:
 	PHL_TRACE(COMP_PHL_MCC, _PHL_INFO_, "rtw_hal_mcc_disable(): Ststus(%d)\n",
@@ -432,7 +466,7 @@ enum rtw_hal_status rtw_hal_mcc_enable(void *hal, struct rtw_phl_mcc_en_info *in
 			PHL_TRACE(COMP_PHL_MCC, _PHL_ERR_, "rtw_hal_mcc_enable(): Notify MCC start failed\n");
 		}
 	}
-
+	rtw_hal_notification(hal, MSG_EVT_MCC_START, ref_role->rlink->hw_band);
 	status = RTW_HAL_STATUS_SUCCESS;
 exit:
 	PHL_TRACE(COMP_PHL_MCC, _PHL_INFO_, "rtw_hal_mcc_enable(): Ststus(%d)\n",

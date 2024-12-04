@@ -22,10 +22,10 @@ enum rtw_hal_status rtw_hal_mp_rx_phy_crc_ok(
 {
 	enum rtw_hal_status hal_status = RTW_HAL_STATUS_FAILURE;
 
-	PHL_INFO("%s: phy index: %d\n", __FUNCTION__, mp->cur_phy);
+	PHL_INFO("%s: phy index: %d\n", __FUNCTION__, arg->rx_phy_idx);
 
 	hal_status = rtw_hal_bb_get_rx_ok(mp->hal,
-				mp->cur_phy, &arg->rx_ok);
+				arg->rx_phy_idx, &arg->rx_ok);
 
 	PHL_INFO("%s: status = %d\n", __FUNCTION__, hal_status);
 	PHL_INFO("%s: crc ok count = %d\n", __FUNCTION__, arg->rx_ok);
@@ -38,9 +38,9 @@ enum rtw_hal_status rtw_hal_mp_rx_phy_crc_err(
 {
 	enum rtw_hal_status hal_status = RTW_HAL_STATUS_FAILURE;
 
-	PHL_INFO("%s: phy index: %d\n", __FUNCTION__, mp->cur_phy);
+	PHL_INFO("%s: phy index: %d\n", __FUNCTION__, arg->rx_phy_idx);
 
-	hal_status = rtw_hal_bb_get_rx_crc(mp->hal,	mp->cur_phy, &arg->rx_err);
+	hal_status = rtw_hal_bb_get_rx_crc(mp->hal, arg->rx_phy_idx, &arg->rx_err);
 
 	PHL_INFO("%s: status = %d\n", __FUNCTION__, hal_status);
 	PHL_INFO("%s: crc error count = %d\n", __FUNCTION__, arg->rx_err);
@@ -55,7 +55,7 @@ enum rtw_hal_status rtw_hal_mp_rx_mac_crc_ok(
 
 	PHL_INFO("%s\n", __FUNCTION__);
 
-	hal_status = rtw_hal_mac_get_rx_cnt(mp->hal, mp->cur_phy, MAC_AX_RX_CRC_OK, &arg->rx_ok);
+	hal_status = rtw_hal_mac_get_rx_cnt(mp->hal, arg->rx_phy_idx, MAC_AX_RX_CRC_OK, &arg->rx_ok);
 
 	PHL_INFO("%s: status = %d\n", __FUNCTION__, hal_status);
 	PHL_INFO("%s: mac crc OK count = %d\n", __FUNCTION__, arg->rx_ok);
@@ -70,7 +70,7 @@ enum rtw_hal_status rtw_hal_mp_rx_mac_crc_err(
 
 	PHL_INFO("%s\n", __FUNCTION__);
 
-	hal_status = rtw_hal_mac_get_rx_cnt(mp->hal, mp->cur_phy, MAC_AX_RX_CRC_FAIL, &arg->rx_err);
+	hal_status = rtw_hal_mac_get_rx_cnt(mp->hal, arg->rx_phy_idx, MAC_AX_RX_CRC_FAIL, &arg->rx_err);
 
 	PHL_INFO("%s: status = %d\n", __FUNCTION__, hal_status);
 	PHL_INFO("%s: mac crc error count = %d\n", __FUNCTION__, arg->rx_err);
@@ -137,7 +137,9 @@ enum rtw_hal_status rtw_hal_mp_rx_get_rssi_ex(
 
 	PHL_INFO("%s: rx_path: %d\n", __FUNCTION__, arg->rx_path);
 
-	hal_status = rtw_hal_bb_get_rssi_ex(mp->hal, arg->rx_path, &arg->rssi_ex, mp->cur_phy);
+	hal_status = rtw_hal_bb_get_rssi_ex(mp->hal, arg->rssi_ex,
+					arg->rx_path, arg->strm, arg->rx_phy_idx);
+
 	PHL_INFO("%s: status = %d\n", __FUNCTION__, hal_status);
 
 	return hal_status;
@@ -162,23 +164,20 @@ enum rtw_hal_status rtw_hal_mp_rx_trigger_rxevm(
 {
 	enum rtw_hal_status hal_status = RTW_HAL_STATUS_FAILURE;
 
-	PHL_INFO("%s: phy index: %d\n", __FUNCTION__, mp->cur_phy);
+	PHL_INFO("%s: phy index: %d\n", __FUNCTION__, arg->rx_phy_idx);
 
-	hal_status = rtw_hal_bb_trigger_rxevm(mp->hal, mp->cur_phy,
-	&arg->phy0_user0_rxevm, &arg->phy0_user1_rxevm, &arg->phy0_user2_rxevm, &arg->phy0_user3_rxevm,
-	&arg->phy1_user0_rxevm, &arg->phy1_user1_rxevm, &arg->phy1_user2_rxevm, &arg->phy1_user3_rxevm);
+	hal_status = rtw_hal_bb_trigger_rxevm(mp->hal, &arg->phy_user0_rxevm,
+	                                               &arg->phy_user1_rxevm,
+	                                               &arg->phy_user2_rxevm,
+	                                               &arg->phy_user3_rxevm,
+	                                               arg->rx_phy_idx);
 
 	PHL_INFO("%s: status = %d\n", __FUNCTION__, hal_status);
 
-	PHL_INFO("%s: phy0_user0_rxevm = %d\n", __FUNCTION__, arg->phy0_user0_rxevm);
-	PHL_INFO("%s: phy0_user1_rxevm = %d\n", __FUNCTION__, arg->phy0_user1_rxevm);
-	PHL_INFO("%s: phy0_user2_rxevm = %d\n", __FUNCTION__, arg->phy0_user2_rxevm);
-	PHL_INFO("%s: phy0_user3_rxevm = %d\n", __FUNCTION__, arg->phy0_user3_rxevm);
-
-	PHL_INFO("%s: phy1_user0_rxevm = %d\n", __FUNCTION__, arg->phy1_user0_rxevm);
-	PHL_INFO("%s: phy1_user1_rxevm = %d\n", __FUNCTION__, arg->phy1_user1_rxevm);
-	PHL_INFO("%s: phy1_user2_rxevm = %d\n", __FUNCTION__, arg->phy1_user2_rxevm);
-	PHL_INFO("%s: phy1_user3_rxevm = %d\n", __FUNCTION__, arg->phy1_user3_rxevm);
+	PHL_INFO("%s: phy_user0_rxevm = %d\n", __FUNCTION__, arg->phy_user0_rxevm);
+	PHL_INFO("%s: phy_user1_rxevm = %d\n", __FUNCTION__, arg->phy_user1_rxevm);
+	PHL_INFO("%s: phy_user2_rxevm = %d\n", __FUNCTION__, arg->phy_user2_rxevm);
+	PHL_INFO("%s: phy_user3_rxevm = %d\n", __FUNCTION__, arg->phy_user3_rxevm);
 
 	return hal_status;
 }
@@ -200,4 +199,50 @@ enum rtw_hal_status rtw_hal_mp_rx_set_gain_offset(
 	return hal_status;
 }
 
+enum rtw_hal_status rtw_hal_mp_rx_set_rx_fltr(
+	struct mp_context *mp, struct mp_rx_arg *arg)
+{
+	struct phl_info_t *phl_info = mp->phl;
+	struct hal_info_t *hal_info = (struct hal_info_t *)mp->hal;
+	struct rtw_phl_stainfo_t * sta = NULL;
+	enum rtw_hal_status hal_status = RTW_HAL_STATUS_FAILURE;
+	struct rtw_hal_com_t *hal_com = hal_info->hal_com;
+	u16 macid;
+
+	macid = rtw_phl_get_macid_by_addr(phl_info, arg->rx_fltr_addr);
+	sta = rtw_phl_get_stainfo_by_macid(phl_info, macid);
+
+	if(sta) {
+		if(arg->rx_fltr_enable) {
+			sta->rlink->mstate = MLME_LINKING;
+			hal_status = rtw_hal_mac_addr_cam_change_entry(hal_info, sta, PHL_UPD_STA_INFO_CHANGE, true);
+			if (RTW_HAL_STATUS_SUCCESS != hal_status)
+				return hal_status;
+
+			hal_status = rtw_hal_mac_set_rxfltr_opt_by_mode(hal_com, HW_BAND_0, RX_FLTR_OPT_MODE_MP);
+			if (RTW_HAL_STATUS_SUCCESS != hal_status)
+				return hal_status;
+
+			hal_status = rtw_hal_set_rxfltr_type_by_mode(hal_info, HW_BAND_0, RX_FLTR_TYPE_MODE_MP);
+			if (RTW_HAL_STATUS_SUCCESS != hal_status)
+				return hal_status;
+		}
+		else {
+			sta->rlink->mstate = MLME_NO_LINK;
+			hal_status = rtw_hal_mac_addr_cam_change_entry(hal_info, sta, PHL_UPD_STA_INFO_CHANGE, true);
+			if (RTW_HAL_STATUS_SUCCESS != hal_status)
+				return hal_status;
+
+			hal_status = rtw_hal_mac_set_rxfltr_opt_by_mode(hal_com, HW_BAND_0, RX_FLTR_OPT_MODE_STA_NORMAL);
+			if (RTW_HAL_STATUS_SUCCESS != hal_status)
+				return hal_status;
+
+			hal_status = rtw_hal_set_rxfltr_type_by_mode(hal_info, HW_BAND_0, RX_FLTR_TYPE_MODE_HAL_INIT);
+			if (RTW_HAL_STATUS_SUCCESS != hal_status)
+				return hal_status;
+		}
+		PHL_INFO("%s: status = %d\n", __FUNCTION__, hal_status);
+	}
+	return hal_status;
+}
 #endif /* CONFIG_HAL_TEST_MP */

@@ -254,7 +254,7 @@ u32 halrf_psd_get_point_data_8852b(struct rf_info *rf,
 	halrf_wreg(rf, 0x802c, 0x0fff0000, (point & 0xfff));
 	halrf_wreg(rf, 0x8034, 0x00000001, 0x1);
 	halrf_wreg(rf, 0x8034, 0x00000001, 0x0);
-	halrf_delay_ms(rf, 1);
+	halrf_delay_us(rf, 500);
 
 	halrf_wreg(rf, 0x80d4, 0xffffffff, 0x002d0000);
 	val_tmp = halrf_rreg(rf, 0x80fc, 0x007f0000);
@@ -263,9 +263,6 @@ u32 halrf_psd_get_point_data_8852b(struct rf_info *rf,
 
 	data = (val_tmp << 25) | (val >> 7);
 
-	RF_DBG(rf, DBG_RF_PSD, "======> %s   phy=%d   point=0x%x   data=0x%08x\n",
-		__func__, phy, point, data);
-
 	return data;
 }
 
@@ -273,21 +270,32 @@ void halrf_psd_query_8852b(struct rf_info *rf, enum phl_phy_idx phy,
 			u32 point, u32 start_point, u32 stop_point, u32 *outbuf)
 {
 	struct halrf_psd_data *psd_info = &rf->psd;
-	struct rtw_hal_com_t *hal = rf->hal_com;
 	u32 i = 0, j = 0;
-	s32 point_temp;
+	s32 point_temp = 0;
 
 	RF_DBG(rf, DBG_RF_PSD, "======> %s phy=%d point=%d start_point=%d stop_point=%d\n",
 		__func__, phy, point, start_point, stop_point);
 
-	if (psd_info->psd_result_running == true) {
+#ifdef PHL_PLATFORM_AP
+	if (psd_info->psd_result_running == 2) {
+		for (i = 0; i < PSD_RF_DATA_NUM; i++)
+			outbuf[i] = psd_info->psd_data[i];
+
+		RF_DBG(rf, DBG_RF_PSD, "======> %s PSD End !!!\n", __func__);
+
+		psd_info->psd_result_running = 0;
+		return;
+	}
+#else
+	if (psd_info->psd_result_running == 1) {
 		RF_DBG(rf, DBG_RF_PSD, "======> %s PSD Running Return !!!\n", __func__);
 		return;
 	}
+	psd_info->psd_result_running = 1;
+#endif
 
-	psd_info->psd_result_running = true;
-
-	hal_mem_set(hal, psd_info->psd_data, 0, sizeof(psd_info->psd_data));
+	for (i = 0; i < PSD_RF_DATA_NUM; i++)
+		psd_info->psd_data[i] = 0;
 
 	i = start_point;
 	while (i < stop_point) {
@@ -305,24 +313,34 @@ void halrf_psd_query_8852b(struct rf_info *rf, enum phl_phy_idx phy,
 		j++;
 	}
 
-	RF_DBG(rf, DBG_RF_PSD, "psd_info->psd_data\n");
+	RF_DBG(rf, DBG_RF_PSD, "PSD Point = Start:%d   End:%d\n",
+		start_point - point, point_temp);
 
-	for (i = 0; i < 320; i = i + 10) {
-		RF_DBG(rf, DBG_RF_PSD, "%d  %d  %d  %d  %d  %d  %d  %d  %d  %d\n",
-			psd_info->psd_data[i], psd_info->psd_data[i + 1],
-			psd_info->psd_data[i + 2], psd_info->psd_data[i + 3],
-			psd_info->psd_data[i + 4], psd_info->psd_data[i + 5],
-			psd_info->psd_data[i + 6], psd_info->psd_data[i + 7],
-			psd_info->psd_data[i + 8], psd_info->psd_data[i + 9]);
+	for (i = 0; i < PSD_RF_DATA_NUM; i = i + 10) {
+		RF_DBG(rf, DBG_RF_PSD,
+			"%d   %d   %d   %d   %d   %d   %d   %d   %d   %d\n",
+			psd_info->psd_data[i],
+			psd_info->psd_data[i + 1],
+			psd_info->psd_data[i + 2],
+			psd_info->psd_data[i + 3],
+			psd_info->psd_data[i + 4],
+			psd_info->psd_data[i + 5],
+			psd_info->psd_data[i + 6],
+			psd_info->psd_data[i + 7],
+			psd_info->psd_data[i + 8],
+			psd_info->psd_data[i + 9]);
 	}
 
-	hal_mem_cpy(hal, outbuf, psd_info->psd_data,
-		sizeof(psd_info->psd_data));
+	for (i = 0; i < PSD_RF_DATA_NUM; i++)
+		outbuf[i] = psd_info->psd_data[i];
 
 	RF_DBG(rf, DBG_RF_PSD, "======> %s PSD End !!!\n", __func__);
 
-	psd_info->psd_result_running = false;
-
+#ifdef PHL_PLATFORM_AP
+	psd_info->psd_result_running = 2;
+#else
+	psd_info->psd_result_running = 0;
+#endif
 }
 
 #endif	/*RF_8852B_SUPPORT*/

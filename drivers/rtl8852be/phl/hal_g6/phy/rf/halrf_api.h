@@ -29,7 +29,18 @@ enum halrf_rfk_type {
 	RF_BTC_TXGAPK		= 3,
 	RF_BTC_DACK		= 4,
 	RF_BTC_RXDCK		= 5,
-	RF_BTC_TSSI		= 6
+	RF_BTC_TSSI		= 6,
+	RF_BTC_CHLK		= 7
+};
+
+enum halrf_rfk_fwlog {
+	RFK_LOG_IQK		= 0,
+	RFK_LOG_DPK		= 1,
+	RFK_LOG_DACK		= 2,
+	RFK_LOG_RXDCK		= 3,
+	RFK_LOG_TXGAPK	= 4,
+	RFK_LOG_TSSI		= 5,
+	RFK_LOG_TXTABLE	= 6,
 };
 
 enum halrf_rfk_process {
@@ -37,6 +48,24 @@ enum halrf_rfk_process {
 	RFK_START		= 1,
 	RFK_ONESHOT_START	= 2,
 	RFK_ONESHOT_STOP	= 3
+};
+
+enum adc_ck {
+	ADC_NA	= 0,
+	ADC_480M	= 1,
+	ADC_960M	= 2,
+	ADC_1920M	= 3,
+};
+
+enum dac_ck {
+	DAC_40M	= 0,
+	DAC_80M	= 1,
+	DAC_120M	= 2,
+	DAC_160M	= 3,
+	DAC_240M	= 4,
+	DAC_320M	= 5,
+	DAC_480M	= 6,
+	DAC_960M	= 7,
 };
 
 enum halrf_event_idx {
@@ -93,7 +122,40 @@ void halrf_fast_chl_sw_reload(struct rf_info *rf, u8 chl_index, u8 t_index);
 
 /*FW Offload*/
 void halrf_write_fwofld_start(struct rf_info *rf);
+void halrf_write_fwofld_trigger(struct rf_info *rf);
 void halrf_write_fwofld_end(struct rf_info *rf);
 
 void  halrf_quick_check_rf(void *rf_void);
+
+/*MCC function*/
+void halrf_mcc_info_init(void *rf_void, enum phl_phy_idx phy);
+void halrf_mcc_get_ch_info(void *rf_void, enum phl_phy_idx phy);
+void  halrf_watchdog_stop(struct rf_info *rf, bool is_stop);
+/*DBCC*/
+void halrf_chlk_backup_dbcc(struct rf_info *rf, enum phl_phy_idx phy);
+void halrf_chlk_reload_dbcc(struct rf_info *rf, enum phl_phy_idx phy, u8 idx);
+bool halrf_chlk_reload_check_dbcc(struct rf_info *rf, enum phl_phy_idx phy);
+void halrf_reset_io_count(struct rf_info *rf);
+void halrf_common_setting_chl_rfk(struct rf_info *rf, enum phl_phy_idx phy, bool is_before_k);
+bool halrf_is_under_cac(struct rf_info *rf, enum phl_phy_idx phy);
+//
+void halrf_ops_rx_dck(struct rf_info *rf, enum phl_phy_idx phy, bool is_afe);
+//---- txgapk ---
+void halrf_ops_do_txgapk(struct rf_info *rf, enum phl_phy_idx phy);
+void halrf_ops_txgapk_w_table_default(struct rf_info *rf, enum phl_phy_idx phy);
+void halrf_ops_txgapk_enable(struct rf_info *rf, enum phl_phy_idx phy);
+void halrf_ops_txgapk_init(struct rf_info *rf);
+//---------------
+void halrf_ops_tssi_disable(struct rf_info *rf, enum phl_phy_idx phy);
+void halrf_ops_do_tssi(struct rf_info *rf, enum phl_phy_idx phy, bool hwtx_en);
+void halrf_ops_dpk(struct rf_info *rf, enum phl_phy_idx phy, bool force);
+void halrf_ops_dack(struct rf_info *rf, bool force);
+void halrf_ops_lck(struct rf_info *rf);
+void halrf_ops_lck_tracking(struct rf_info *rf);
+void halrf_ops_lo_test(struct rf_info *rf, bool is_on, enum rf_path path);
+void halrf_ops_config_radio_to_fw(struct rf_info *rf);
+void halrf_ops_adie_pow_ctrl(struct rf_info *rf, bool rf_off, bool others_off);
+void halrf_ops_afe_pow_ctrl(struct rf_info *rf, bool adda_off, bool pll_off);
+void halrf_ops_set_gpio_by_ch(struct rf_info *rf, enum phl_phy_idx phy, enum band_type band);
+void halrf_rpt_rt_rfk_info(struct rf_info *rf, enum phl_phy_idx phy, u32 type);
 #endif

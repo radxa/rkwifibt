@@ -25,6 +25,7 @@
 #include "halbb_precomp.h"
 
 #ifdef HALBB_UL_TB_CTRL_SUPPORT
+bool flag_prv_wa_en = 0;
 void halbb_ul_tb_reset(struct bb_info *bb)
 {
 	struct bb_ul_tb_info *bb_ul_tb = &bb->bb_ul_tb_i;
@@ -52,10 +53,18 @@ void halbb_ul_tb_chk(struct bb_info *bb)
 	bb_ul_tb->def_tri_idx = tpu->tx_ptrn_shap_idx;
 
 	BB_DBG(bb, DBG_UL_TB_CTRL, "band = %d, bw = %d\n", bb_api->band, 20 << bb_api->bw);
-	if (bb_api->band >= BAND_ON_5G && bb_api->bw >= CHANNEL_WIDTH_40)
-		bb_ul_tb->dyn_tb_bedge_en = true;
+	if (bb_api->band >= BAND_ON_5G && bb_api->bw >= CHANNEL_WIDTH_40) {
+		if (bb->ic_type == BB_RTL8852A ||
+		    (bb->ic_type == BB_RTL8852B && bb->hal_com->cv <= CBV) ||
+		    (bb->ic_type == BB_RTL8852C && bb->hal_com->cv == CAV)
+		)
+			bb_ul_tb->dyn_tb_bedge_en = true;
+		else
+			bb_ul_tb->dyn_tb_bedge_en = false;
+	}
 	else
 		bb_ul_tb->dyn_tb_bedge_en = false;
+
 	BB_DBG(bb, DBG_UL_TB_CTRL, "def_if_bandedge = %d, def_tri_idx = %d\n", bb_ul_tb->def_if_bandedge, bb_ul_tb->def_tri_idx);
 	BB_DBG(bb, DBG_UL_TB_CTRL, "dyn_tb_bedge_en = %d, dyn_tb_tri_en = %d\n", bb_ul_tb->dyn_tb_bedge_en, bb_ul_tb->dyn_tb_tri_en);
 }
@@ -66,7 +75,7 @@ void halbb_ul_tb_ctrl(struct bb_info *bb)
 	struct bb_link_info *bb_link = &bb->bb_link_i;
 	struct rtw_phl_com_t *phl = bb->phl_com;
 	struct dev_cap_t *dev = &phl->dev_cap;
-	struct rtw_phl_stainfo_t *sta;
+	struct rtw_phl_stainfo_t *sta = NULL;
 	struct bb_ul_tb_cr_info *cr = &bb->bb_ul_tb_i.bb_ul_tb_cr_i;
 	struct bb_api_info *bb_api = &bb->bb_api_i;
 	struct rtw_tpu_info *tpu = &bb->hal_com->band[bb->bb_phy_idx].rtw_tpu_i;
@@ -74,7 +83,7 @@ void halbb_ul_tb_ctrl(struct bb_info *bb)
 	u8 num_high_tf_client = 0;
 	u8 num_low_tf_client = 0;
 	u8 num_active_client = 0;
-	u32 i = 0;
+	u16 i = 0;
 
 	BB_DBG(bb, DBG_UL_TB_CTRL, "[%s]\n", __func__);
 
@@ -83,19 +92,19 @@ void halbb_ul_tb_ctrl(struct bb_info *bb)
 		return;
 	}
 
-	if (phl->fw_info.fw_type != RTW_FW_NIC) {
+	if ((phl->fw_info.fw_type != RTW_FW_NIC) && (phl->fw_info.fw_type != RTW_FW_NIC_CE)) {
 		BB_DBG(bb, DBG_UL_TB_CTRL, "Not STA mode, fw_type = %d\n", phl->fw_info.fw_type);
 		return;
 	}
 
-	if (bb_link->first_connect) {
-		BB_DBG(bb, DBG_UL_TB_CTRL, "first_connect = %d\n", bb_link->first_connect);
-		halbb_ul_tb_chk(bb);
+	if (bb_link->first_disconnect) {
+		BB_DBG(bb, DBG_UL_TB_CTRL, "first_disconnect = %d\n", bb_link->first_disconnect);
+		halbb_ul_tb_reset(bb);
+		return;
 	}
 
-	if (!bb_link->is_linked || bb_link->first_disconnect) {
-		BB_DBG(bb, DBG_UL_TB_CTRL, "is_linked = %d, first_disconnect = %d\n", bb_link->is_linked, bb_link->first_disconnect);
-		halbb_ul_tb_reset(bb);
+	if (!bb_link->is_linked) {
+		BB_DBG(bb, DBG_UL_TB_CTRL, "is_linked = %d\n", bb_link->is_linked);
 		return;
 	}
 
@@ -116,6 +125,21 @@ void halbb_ul_tb_ctrl(struct bb_info *bb)
 
 		BB_DBG(bb, DBG_UL_TB_CTRL, "[%d] macid=%d, rx_tf_cnt = %d, pre_rx_tf_cnt = %d, diff = %d\n", i, sta->macid, sta->stats.rx_tf_cnt, sta->stats.pre_rx_tf_cnt, sta->stats.rx_tf_cnt - sta->stats.pre_rx_tf_cnt);
 		sta->stats.pre_rx_tf_cnt = sta->stats.rx_tf_cnt;
+
+		// WA of power diff large between peramble portion and data portion
+		if (sta->flag_pwr_diff_large == 1){
+			if (flag_prv_wa_en == 0){
+				flag_prv_wa_en = 1;
+				halbb_pwr_diff_wa_enable(bb, bb->bb_phy_idx);
+			}
+			sta->flag_pwr_diff_large = 0;
+		}
+		else {
+			if (flag_prv_wa_en == 1){
+				flag_prv_wa_en = 0;		
+				halbb_pwr_diff_wa_disable(bb, bb->bb_phy_idx);
+			}
+		}
 	}
 
 	BB_DBG(bb, DBG_UL_TB_CTRL, "num_high_tf_client = %d, num_low_tf_client = %d\n", num_high_tf_client, num_low_tf_client);
@@ -237,8 +261,17 @@ void halbb_cr_cfg_ul_tb_init(struct bb_info *bb)
 	#endif
 
 	default:
+		BB_WARNING("[%s] BBCR Hook FAIL!\n", __func__);
+		if (bb->bb_dbg_i.cr_fake_init_hook_en) {
+			BB_TRACE("[%s] BBCR fake init\n", __func__);
+			halbb_cr_hook_fake_init(bb, (u32 *)cr, (sizeof(struct bb_ul_tb_cr_info) >> 2));
+		}
 		break;
 	}
 
+	if (bb->bb_dbg_i.cr_init_hook_recorder_en) {
+		BB_TRACE("[%s] BBCR Hook dump\n", __func__);
+		halbb_cr_hook_init_dump(bb, (u32 *)cr, (sizeof(struct bb_ul_tb_cr_info) >> 2));
+	}
 }
 #endif

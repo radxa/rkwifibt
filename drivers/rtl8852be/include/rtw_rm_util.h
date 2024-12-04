@@ -26,10 +26,9 @@
 #define MAX(x, y) (((x) > (y)) ? (x) : (y))
 #endif
 
-u8 rm_get_oper_class_via_ch(u8 ch);
-u8 rm_get_ch_set( struct rtw_ieee80211_channel *pch_set, u8 op_class, u8 ch_num);
-u8 rm_get_ch_set_from_bcn_req_opt( struct rtw_ieee80211_channel *pch_set,
-	struct bcn_req_opt *opt);
+u8 rm_get_ch_set(u8 op_class, struct rtw_ieee80211_channel *pch_set, u8 ch_num);
+u8 rm_get_ch_set_from_bcn_req_opt(struct bcn_req_opt *opt,
+	struct rtw_ieee80211_channel *pch_set, u8 pch_num);
 u8 rm_get_bcn_rsni(struct rm_obj *prm, struct wlan_network *pnetwork);
 u8 rm_get_bcn_rcpi(struct rm_obj *prm, struct wlan_network *pnetwork);
 u8 rm_get_frame_rsni(struct rm_obj *prm, union recv_frame *pframe);
@@ -41,7 +40,7 @@ u32 rm_gen_rmid(_adapter *padapter, struct rm_obj *prm, u8 role);
 int is_wildcard_bssid(u8 *bssid);
 
 int rm_get_path_a_max_tx_power(_adapter *adapter, s8 *path_a);
-int rm_get_tx_power(_adapter *adapter, enum rf_path path, enum MGN_RATE rate, s8 *pwr);
+int rm_get_tx_power(_adapter *adapter, enum band_type band, enum MGN_RATE rate, s8 *pwr);
 int rm_get_rx_sensitivity(_adapter *adapter, enum channel_width bw, enum MGN_RATE rate, s8 *pwr);
 
 #endif /* _RTW_RM_UTIL_H_ */
