@@ -130,6 +130,8 @@ Broadcom	AP6354	02d0:4354	bcmdhd.ko
 Broadcom	AP6356S	02d0:4356	bcmdhd.ko
 Broadcom	AP6398S	02d0:4359	bcmdhd.ko
 Rockchip	RK960	0296:5349	rk960.ko
+Rockchip	aic8800D80	a69c:8d80	aic8800_fdrv.ko
+Rockchip	aic8800D80	a69c:8d80	aic_load_fw.ko
 EOF
 fi
 
