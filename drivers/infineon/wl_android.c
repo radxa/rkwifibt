@@ -8978,8 +8978,7 @@ wl_handle_private_cmd(struct net_device *net, char *command, u32 cmd_len)
 #endif /* DHD_BLOB_EXISTENCE_CHECK */
 		if ((rev_info_delim) &&
 			(strnicmp(rev_info_delim, CMD_COUNTRY_DELIMITER,
-			strlen(CMD_COUNTRY_DELIMITER)) == 0) &&
-			(rev_info_delim + 1)) {
+			strlen(CMD_COUNTRY_DELIMITER)) == 0)) {
 			revinfo  = bcm_atoi(rev_info_delim + 1);
 		}
 #ifdef SAVE_CONNECTION_WHEN_CC_UPDATE
