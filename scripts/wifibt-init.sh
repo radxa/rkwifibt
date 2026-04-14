@@ -8,10 +8,16 @@ do_insmod()
 		echo "Installing $1.ko ..."
 		if [ "$1" = "rk960" ]; then
 			insmod "$1.ko" fw_no_sleep=1
-		elif [ "$1" = "aic8800_fdrv" ]; then
+		elif [ "$1" = "aic_load_fw" ]; then
 			insmod "aic_load_fw.ko"
 			sleep 1
 			insmod "aic8800_fdrv.ko"
+		elif [ "$1" = "aic8800_btlpm" ]; then
+			insmod "aic8800_bsp.ko"
+			sleep 1
+			insmod "aic8800_fdrv.ko"
+			sleep 1
+			insmod "aic8800_btlpm.ko"
 		else
 			insmod "$1.ko"
 		fi
